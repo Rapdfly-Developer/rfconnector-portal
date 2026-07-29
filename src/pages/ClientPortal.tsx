@@ -2116,15 +2116,8 @@ function useLiveStations() {
       timer = setInterval(() => load(lat, lng), 30000);
     };
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        p => { if (!cancelled) start(p.coords.latitude, p.coords.longitude); },
-        () => { if (!cancelled) start(51.2010, 10.5120); },
-        { timeout: 5000 }
-      );
-    } else {
-      start(51.2010, 10.5120);
-    }
+    // Always use Berlin — portal context is Germany (matches Marketplace + TomTom layer)
+    start(52.5200, 13.4050);
 
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, []);
