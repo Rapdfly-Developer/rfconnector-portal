@@ -39,7 +39,7 @@ type NavId =
   | 'marketplace' | 'negotiation' | 'signature'
   | 'evse_repo' | 'tariffs' | 'authorisation' | 'events' | 'cdr_exchange' | 'plug_charge' | 'smart_charging'
   | 'supervision' | 'tracking' | 'check_bill' | 'disputes' | 'invoicing' | 'messaging'
-  | 'analytics' | 'api_keys' | 'nearby_stations';
+  | 'analytics' | 'api_keys' | 'nearby_stations' | 'access';
 
 interface NavItem { id: NavId; label: string; icon: React.ElementType; badge?: number }
 interface NavGroup { label: string; items: NavItem[] }
@@ -134,6 +134,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'API Integration',
     items: [
       { id: 'nearby_stations', label: 'Nearby Stations', icon: MapPin },
+      { id: 'access',          label: 'Access',           icon: Plug },
     ],
   },
 ];
@@ -6239,6 +6240,588 @@ function NearbyStationsWorkspace() {
 }
 function renderNearbyStations() { return <NearbyStationsWorkspace />; }
 
+// ── Access Module ─────────────────────────────────────────────────────────────
+
+interface AccessStation {
+  stationId:           string;
+  stationName:         string;
+  address:             string;
+  latitude:            number;
+  longitude:           number;
+  distanceKm:          number;
+  chargingSpeed:       string;
+  operatingHours:      string;
+  availableConnectors: number;
+  occupiedConnectors:  number;
+  totalConnectors:     number;
+  waitingDrivers:      number;
+  estimatedWaitMin:    number;
+  stationStatus:       string;
+  lastUpdated:         string;
+  pricing?:            string;
+  provider:            string;
+  connectors: Array<{
+    connectorRef:   string;
+    connectorType:  string;
+    powerKw:        number;
+    status:         string;
+    waitingDrivers: number;
+  }>;
+}
+
+interface AccessProvider {
+  id:    string;
+  label: string;
+  fetch: (lat: number, lng: number, radius: number) => Promise<{ stations: AccessStation[]; total: number }>;
+}
+
+const ACCESS_BACKEND = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? 'http://localhost:3000';
+
+const ACCESS_PROVIDERS: AccessProvider[] = [
+  {
+    id:    'rfconnector',
+    label: 'RF Connector API',
+    fetch: async (lat, lng, radius) => {
+      const url = `${ACCESS_BACKEND}/api/ev-stations/live?latitude=${lat}&longitude=${lng}&radius=${radius}&page=1&pageSize=200`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const data = await res.json() as { count: number; stations: any[] };
+      return {
+        total: data.count ?? 0,
+        stations: (data.stations ?? []).map((s): AccessStation => ({
+          stationId:           String(s.stationId),
+          stationName:         s.stationName,
+          address:             s.address,
+          latitude:            s.latitude,
+          longitude:           s.longitude,
+          distanceKm:          s.distanceKm,
+          chargingSpeed:       s.chargingSpeed,
+          operatingHours:      s.operatingHours,
+          availableConnectors: s.availableConnectors,
+          occupiedConnectors:  s.occupiedConnectors,
+          totalConnectors:     s.totalConnectors,
+          waitingDrivers:      s.waitingDrivers,
+          estimatedWaitMin:    s.estimatedWaitMin,
+          stationStatus:       s.stationStatus,
+          lastUpdated:         s.lastUpdated,
+          pricing:             undefined,
+          provider:            'RF Connector API',
+          connectors:          s.connectors ?? [],
+        })),
+      };
+    },
+  },
+  // Additional providers can be added here following the same AccessProvider shape
+];
+
+const ACCESS_STATUS_STYLES: Record<string, string> = {
+  Available: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  Busy:      'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  Offline:   'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+};
+
+const ACCESS_CONN_DOT: Record<string, string> = {
+  Available: 'bg-emerald-500',
+  Occupied:  'bg-amber-500',
+  Reserved:  'bg-blue-400',
+  Offline:   'bg-red-400',
+};
+
+function AccessWorkspace() {
+  const [lat, setLat]             = useState('51.2010');
+  const [lng, setLng]             = useState('10.5120');
+  const [radius, setRadius]       = useState(10);
+  const [page, setPage]           = useState(1);
+  const PAGE_SIZE                  = 10;
+
+  const [stations, setStations]   = useState<AccessStation[]>([]);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState('');
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [refreshInterval, setRefreshInterval] = useState(30);
+  const [countdown, setCountdown] = useState(30);
+
+  const [search, setSearch]       = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [connFilter, setConnFilter]     = useState('All');
+  const [sortBy, setSortBy]       = useState<'distance' | 'name' | 'available' | 'power'>('distance');
+  const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('asc');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [activeProviderId, setActiveProviderId] = useState('rfconnector');
+
+  const provider = ACCESS_PROVIDERS.find(p => p.id === activeProviderId) ?? ACCESS_PROVIDERS[0];
+
+  const fetchData = useCallback(async () => {
+    const parsedLat = parseFloat(lat);
+    const parsedLng = parseFloat(lng);
+    if (isNaN(parsedLat) || isNaN(parsedLng)) { setError('Enter valid coordinates.'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const result = await provider.fetch(parsedLat, parsedLng, radius);
+      setStations(result.stations);
+      setLastRefresh(new Date());
+      setCountdown(refreshInterval);
+      setPage(1);
+    } catch (e) {
+      setError(`Failed to load stations: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [lat, lng, radius, provider, refreshInterval]);
+
+  // Initial fetch
+  useEffect(() => { fetchData(); }, []);
+
+  // Auto-refresh timer
+  useEffect(() => {
+    const t = setInterval(fetchData, refreshInterval * 1000);
+    return () => clearInterval(t);
+  }, [fetchData, refreshInterval]);
+
+  // Countdown ticker
+  useEffect(() => {
+    if (!lastRefresh) return;
+    const t = setInterval(() => setCountdown(c => c <= 1 ? refreshInterval : c - 1), 1000);
+    return () => clearInterval(t);
+  }, [lastRefresh, refreshInterval]);
+
+  // Client-side filter + sort
+  const filtered = useMemo(() => {
+    let list = [...stations];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(s =>
+        s.stationName.toLowerCase().includes(q) ||
+        s.address.toLowerCase().includes(q) ||
+        s.provider.toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== 'All') list = list.filter(s => s.stationStatus === statusFilter);
+    if (connFilter !== 'All')   list = list.filter(s => s.connectors.some(c => c.connectorType === connFilter));
+    list.sort((a, b) => {
+      let va: number | string, vb: number | string;
+      switch (sortBy) {
+        case 'distance':  va = a.distanceKm;          vb = b.distanceKm;          break;
+        case 'name':      va = a.stationName;          vb = b.stationName;         break;
+        case 'available': va = a.availableConnectors;  vb = b.availableConnectors; break;
+        case 'power':     va = parseFloat(a.chargingSpeed); vb = parseFloat(b.chargingSpeed); break;
+        default:          va = a.distanceKm;          vb = b.distanceKm;
+      }
+      if (typeof va === 'string') return sortDir === 'asc' ? (va as string).localeCompare(vb as string) : (vb as string).localeCompare(va as string);
+      return sortDir === 'asc' ? (va as number) - (vb as number) : (vb as number) - (va as number);
+    });
+    return list;
+  }, [stations, search, statusFilter, connFilter, sortBy, sortDir]);
+
+  const paginated   = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages  = Math.ceil(filtered.length / PAGE_SIZE);
+
+  const allConnTypes = useMemo(() => {
+    const set = new Set<string>();
+    stations.forEach(s => s.connectors.forEach(c => set.add(c.connectorType)));
+    return ['All', ...Array.from(set).sort()];
+  }, [stations]);
+
+  const toggleSort = (col: typeof sortBy) => {
+    if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(col); setSortDir('asc'); }
+  };
+
+  const SortBtn = ({ col, label }: { col: typeof sortBy; label: string }) => (
+    <button
+      onClick={() => toggleSort(col)}
+      className="text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wide hover:text-slate-700 dark:hover:text-slate-200"
+    >
+      {label}
+      <span className="ml-1">{sortBy === col ? (sortDir === 'asc' ? '↑' : '↓') : <span className="text-slate-200 dark:text-slate-700">↕</span>}</span>
+    </button>
+  );
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Access — EV Station Network"
+        sub="Live station data from configured EV charging providers · OCPI connector status"
+        action={
+          <div className="flex items-center gap-2 flex-wrap">
+            {lastRefresh && (
+              <span className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                Refreshes in {countdown}s
+              </span>
+            )}
+            <select
+              value={refreshInterval}
+              onChange={e => setRefreshInterval(Number(e.target.value))}
+              className="text-xs border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+            >
+              <option value={30}>Every 30s</option>
+              <option value={60}>Every 60s</option>
+              <option value={120}>Every 2 min</option>
+            </select>
+            <button
+              onClick={fetchData}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+        }
+      />
+
+      {/* Provider selector */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-1">Provider:</span>
+        {ACCESS_PROVIDERS.map(p => (
+          <button
+            key={p.id}
+            onClick={() => { setActiveProviderId(p.id); setStations([]); }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+              activeProviderId === p.id
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+            }`}
+          >
+            <Plug className="w-3 h-3" />
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Location + radius panel */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5">
+        <p className="text-sm font-semibold text-slate-700 dark:text-white flex items-center gap-2 mb-3">
+          <MapPin className="w-4 h-4 text-indigo-600" /> Search Location &amp; Radius
+        </p>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide block mb-1">Latitude</label>
+            <input
+              value={lat}
+              onChange={e => setLat(e.target.value)}
+              className="border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm w-32 bg-white dark:bg-slate-800 text-slate-800 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide block mb-1">Longitude</label>
+            <input
+              value={lng}
+              onChange={e => setLng(e.target.value)}
+              className="border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm w-32 bg-white dark:bg-slate-800 text-slate-800 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-400 uppercase tracking-wide block mb-1">Radius (km)</label>
+            <div className="flex gap-1">
+              {[5, 10, 20, 50].map(r => (
+                <button
+                  key={r}
+                  onClick={() => setRadius(r)}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold border ${
+                    radius === r
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={fetchData}
+            className="flex items-center gap-2 bg-indigo-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-indigo-700 font-semibold"
+          >
+            <Search className="w-4 h-4" /> Search
+          </button>
+        </div>
+        {error && (
+          <p className="mt-3 text-xs text-red-500 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" />{error}
+          </p>
+        )}
+      </div>
+
+      {/* Summary stats */}
+      {!loading && stations.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-xl border p-4 bg-indigo-50 border-indigo-100 dark:bg-slate-900 dark:border-indigo-900/40">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total Stations</p>
+              <BatteryCharging className="w-4 h-4 text-indigo-500" />
+            </div>
+            <p className="text-2xl font-black text-indigo-600 dark:text-indigo-400">{filtered.length}</p>
+          </div>
+          <div className="rounded-xl border p-4 bg-emerald-50 border-emerald-100 dark:bg-slate-900 dark:border-emerald-900/40">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Available</p>
+              <CheckCircle className="w-4 h-4 text-emerald-500" />
+            </div>
+            <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+              {filtered.filter(s => s.stationStatus === 'Available').length}
+            </p>
+          </div>
+          <div className="rounded-xl border p-4 bg-amber-50 border-amber-100 dark:bg-slate-900 dark:border-amber-900/40">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Busy</p>
+              <Zap className="w-4 h-4 text-amber-500" />
+            </div>
+            <p className="text-2xl font-black text-amber-600 dark:text-amber-400">
+              {filtered.filter(s => s.stationStatus === 'Busy').length}
+            </p>
+          </div>
+          <div className="rounded-xl border p-4 bg-violet-50 border-violet-100 dark:bg-slate-900 dark:border-violet-900/40">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total Connectors</p>
+              <Plug className="w-4 h-4 text-violet-500" />
+            </div>
+            <p className="text-2xl font-black text-violet-600 dark:text-violet-400">
+              {filtered.reduce((a, s) => a + s.totalConnectors, 0)}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Search + filter bar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            value={search}
+            onChange={e => { setSearch(e.target.value); setPage(1); }}
+            placeholder="Search station name, address, provider…"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+          className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+        >
+          <option value="All">All Status</option>
+          <option value="Available">Available</option>
+          <option value="Busy">Busy</option>
+          <option value="Offline">Offline</option>
+        </select>
+        <select
+          value={connFilter}
+          onChange={e => { setConnFilter(e.target.value); setPage(1); }}
+          className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+        >
+          {allConnTypes.map(t => <option key={t} value={t}>{t === 'All' ? 'All Connectors' : t}</option>)}
+        </select>
+        {lastRefresh && (
+          <span className="text-[11px] text-slate-400 whitespace-nowrap">
+            Updated {lastRefresh.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      {/* Loading skeleton */}
+      {loading && (
+        <div className="space-y-3">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 p-4 animate-pulse">
+              <div className="flex gap-4">
+                <div className="w-10 h-10 rounded-xl bg-slate-200 dark:bg-slate-700 shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-1/3" />
+                  <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded w-1/2" />
+                  <div className="flex gap-2 mt-1">
+                    {[1, 2, 3].map(j => <div key={j} className="h-5 w-14 bg-slate-100 dark:bg-slate-800 rounded-full" />)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-14 text-center">
+          <BatteryCharging className="w-12 h-12 text-slate-300 dark:text-slate-700 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No stations found</p>
+          <p className="text-xs text-slate-400 mt-1">
+            {stations.length > 0 ? 'Try adjusting search or filters.' : 'Enter coordinates and click Search to load stations.'}
+          </p>
+        </div>
+      )}
+
+      {/* Station table */}
+      {!loading && paginated.length > 0 && (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+          {/* Table header */}
+          <div className="grid grid-cols-[2.2fr_1.8fr_1fr_1fr_1fr_1fr_72px] px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 gap-2">
+            <SortBtn col="name"      label="Station" />
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Address</span>
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Connectors</span>
+            <SortBtn col="power"     label="Power" />
+            <SortBtn col="available" label="Available" />
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Status</span>
+            <SortBtn col="distance"  label="Dist." />
+          </div>
+
+          {/* Rows */}
+          <div className="divide-y divide-slate-50 dark:divide-slate-800">
+            {paginated.map(station => {
+              const isExpanded     = expandedId === station.stationId;
+              const connSummary    = [...new Set(station.connectors.map(c => c.connectorType))].slice(0, 3).join(' · ') || '—';
+              const maxPower       = Math.max(...station.connectors.map(c => c.powerKw), 0);
+              const statusStyle    = ACCESS_STATUS_STYLES[station.stationStatus] ?? 'bg-slate-100 text-slate-600';
+
+              return (
+                <div key={station.stationId}>
+                  <div
+                    className={`grid grid-cols-[2.2fr_1.8fr_1fr_1fr_1fr_1fr_72px] gap-2 px-4 py-3.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${isExpanded ? 'bg-indigo-50/60 dark:bg-indigo-900/10' : ''}`}
+                    onClick={() => setExpandedId(isExpanded ? null : station.stationId)}
+                  >
+                    {/* Station name + provider */}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center shrink-0">
+                        <BatteryCharging className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 dark:text-white truncate">{station.stationName}</p>
+                        <p className="text-[10px] text-indigo-500 font-medium">{station.provider}</p>
+                      </div>
+                    </div>
+                    {/* Address */}
+                    <div className="flex items-center min-w-0 pr-2">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{station.address || '—'}</p>
+                    </div>
+                    {/* Connectors */}
+                    <div className="flex items-center">
+                      <span className="text-xs text-slate-600 dark:text-slate-300 truncate">{connSummary}</span>
+                    </div>
+                    {/* Power */}
+                    <div className="flex items-center">
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        {maxPower > 0 ? `${maxPower} kW` : station.chargingSpeed || '—'}
+                      </span>
+                    </div>
+                    {/* Available */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{station.availableConnectors}</span>
+                      <span className="text-xs text-slate-400">/ {station.totalConnectors}</span>
+                    </div>
+                    {/* Status badge */}
+                    <div className="flex items-center">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusStyle}`}>
+                        {station.stationStatus}
+                      </span>
+                    </div>
+                    {/* Distance */}
+                    <div className="flex items-center">
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{station.distanceKm} km</span>
+                    </div>
+                  </div>
+
+                  {/* Expanded detail panel */}
+                  {isExpanded && (
+                    <div className="bg-slate-50 dark:bg-slate-800/40 border-t border-slate-100 dark:border-slate-700 px-4 py-4 space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Location</p>
+                          <p className="text-xs text-slate-700 dark:text-slate-300">{station.address || '—'}</p>
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            {station.latitude.toFixed(6)}, {station.longitude.toFixed(6)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Operating Hours</p>
+                          <p className="text-xs text-slate-700 dark:text-slate-300">{station.operatingHours || '24/7'}</p>
+                          <p className="text-[10px] text-slate-400 mt-1">Last updated: {station.lastUpdated}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Pricing</p>
+                          <p className="text-xs text-slate-700 dark:text-slate-300">{station.pricing ?? 'Contact operator'}</p>
+                          {station.waitingDrivers > 0 && (
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                              {station.waitingDrivers} driver{station.waitingDrivers > 1 ? 's' : ''} waiting · ~{station.estimatedWaitMin} min wait
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                          Connectors ({station.connectors.length})
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {station.connectors.map((c, i) => (
+                            <div key={c.connectorRef || i} className="flex items-center gap-2 bg-white dark:bg-slate-900 rounded-lg px-3 py-2 border border-slate-200 dark:border-slate-700">
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${ACCESS_CONN_DOT[c.status] ?? 'bg-slate-300'}`} />
+                              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{c.connectorType}</span>
+                              <span className="text-xs text-slate-400">{c.powerKw} kW</span>
+                              <span className={`text-[10px] font-medium ${
+                                c.status === 'Available' ? 'text-emerald-600' :
+                                c.status === 'Occupied'  ? 'text-amber-600'  :
+                                c.status === 'Reserved'  ? 'text-blue-500'   :
+                                'text-red-500'
+                              }`}>{c.status}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length} stations
+          </p>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              const p = page <= 3 ? i + 1 : page + i - 2;
+              if (p < 1 || p > totalPages) return null;
+              return (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  className={`px-3 py-1.5 rounded-lg text-xs border ${
+                    p === page
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {p}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderAccess() { return <AccessWorkspace />; }
+
 function renderAPIKeys() { return <APIKeysWorkspace />; }
 
 type EvseRow = { name:string; city:string; country:string; evses:number; available:string; quality:number; protocol:string; operator:string; power:string; connectors:string; lastSync:string };
@@ -9483,6 +10066,7 @@ export default function ClientPortal() {
       case 'messaging':    return <MessagingSection />;
       case 'api_keys':         return renderAPIKeys();
       case 'nearby_stations':  return renderNearbyStations();
+      case 'access':           return renderAccess();
       default:                 return null;
     }
   };
