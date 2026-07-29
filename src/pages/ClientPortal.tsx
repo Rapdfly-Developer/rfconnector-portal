@@ -39,7 +39,7 @@ type NavId =
   | 'marketplace' | 'negotiation' | 'signature'
   | 'evse_repo' | 'tariffs' | 'authorisation' | 'events' | 'cdr_exchange' | 'plug_charge' | 'smart_charging'
   | 'supervision' | 'tracking' | 'check_bill' | 'disputes' | 'invoicing' | 'messaging'
-  | 'analytics' | 'api_keys' | 'nearby_stations' | 'access';
+  | 'analytics' | 'api_keys' | 'nearby_stations' | 'access' | 'live_data';
 
 interface NavItem { id: NavId; label: string; icon: React.ElementType; badge?: number }
 interface NavGroup { label: string; items: NavItem[] }
@@ -135,6 +135,12 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'nearby_stations', label: 'Nearby Stations', icon: MapPin },
       { id: 'access',          label: 'Access',           icon: Plug },
+    ],
+  },
+  {
+    label: 'Live Data',
+    items: [
+      { id: 'live_data', label: 'Live Data', icon: Zap },
     ],
   },
 ];
@@ -6879,6 +6885,485 @@ function AccessWorkspace() {
 
 function renderAccess() { return <AccessWorkspace />; }
 
+// ── Live Data — Fastned OCPI 2.2.1 ───────────────────────────────────────────
+
+interface OCPIConnector {
+  id:                  string;
+  standard:            string;
+  format:              string;
+  power_type:          string;
+  max_voltage:         number;
+  max_ampere:          number;
+  max_electric_power?: number;
+  tariff_ids?:         string[];
+  last_updated:        string;
+}
+interface OCPIEVSE {
+  uid:           string;
+  evse_id?:      string;
+  status:        string;
+  connectors:    OCPIConnector[];
+  capabilities?: string[];
+  last_updated:  string;
+}
+interface OCPILocation {
+  id:             string;
+  name:           string;
+  address:        string;
+  city:           string;
+  postal_code?:   string;
+  country:        string;
+  coordinates:    { latitude: string; longitude: string };
+  evses:          OCPIEVSE[];
+  operator?:      { name?: string };
+  opening_times?: { twentyfourseven?: boolean };
+  facilities?:    string[];
+  parking_type?:  string;
+  time_zone?:     string;
+  last_updated:   string;
+}
+interface OCPITariff {
+  id:           string;
+  currency:     string;
+  elements:     Array<{ price_components: Array<{ type: string; price: number; vat?: number; step_size: number }> }>;
+  last_updated: string;
+}
+
+const FASTNED_LOC_URL = 'https://uk-public.api.fastned.nl/uk-public/ocpi/cpo/2.2.1/locations';
+const FASTNED_TAR_URL = 'https://uk-public.api.fastned.nl/uk-public/ocpi/cpo/2.2.1/tariffs';
+
+const OCPI_STD_MAP: Record<string, string> = {
+  IEC_62196_T2_COMBO: 'CCS2', IEC_62196_T1_COMBO: 'CCS1',
+  CHADEMO: 'CHAdeMO', IEC_62196_T2: 'Type 2', IEC_62196_T1: 'Type 1',
+  TESLA_R: 'Tesla', TESLA_S: 'Tesla',
+};
+const OCPI_FAC_EMOJI: Record<string, string> = {
+  HOTEL: '🏨', RESTAURANT: '🍽️', CAFE: '☕', MALL: '🛍️',
+  SUPERMARKET: '🛒', WIFI: '📶', TOILET: '🚻', FUEL_STATION: '⛽',
+  BUS_STOP: '🚌', TRAIN_STATION: '🚉', AIRPORT: '✈️', RECREATION_AREA: '🌳',
+};
+
+function ocpiStd(s: string)  { return OCPI_STD_MAP[s] ?? s; }
+function ocpiPwr(pt: string) { return pt.startsWith('AC') ? 'AC' : 'DC'; }
+function ocpiKW(c: OCPIConnector) {
+  if (c.max_electric_power) return Math.round(c.max_electric_power / 1000);
+  return Math.round((c.max_voltage * c.max_ampere) / 1000);
+}
+function ocpiPrice(t: OCPITariff | undefined): string {
+  if (!t) return 'N/A';
+  const sym = t.currency === 'GBP' ? '£' : t.currency === 'EUR' ? '€' : t.currency;
+  for (const el of t.elements ?? []) {
+    for (const pc of el.price_components ?? []) {
+      if (pc.type === 'ENERGY') return `${sym}${pc.price.toFixed(2)}/kWh`;
+      if (pc.type === 'FLAT')   return `${sym}${pc.price.toFixed(2)}/session`;
+      if (pc.type === 'TIME')   return `${sym}${pc.price.toFixed(2)}/min`;
+    }
+  }
+  return 'N/A';
+}
+function ocpiStatusCls(s: string) {
+  if (s === 'AVAILABLE')   return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400';
+  if (s === 'CHARGING')    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+  if (s === 'RESERVED')    return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+  if (['INOPERATIVE','OUTOFORDER','BLOCKED'].includes(s)) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+  return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400';
+}
+
+// Fallback Fastned UK sample data
+const FASTNED_FB_TARIFFS: OCPITariff[] = [
+  { id: 'T-DC', currency: 'GBP', elements: [{ price_components: [{ type: 'ENERGY', price: 0.69, step_size: 1 }] }], last_updated: '' },
+  { id: 'T-AC', currency: 'GBP', elements: [{ price_components: [{ type: 'ENERGY', price: 0.49, step_size: 1 }] }], last_updated: '' },
+];
+
+function makeFastnedEVSE(uid: string, status: string, hasAC = false): OCPIEVSE {
+  const now = new Date().toISOString();
+  const conns: OCPIConnector[] = [
+    { id: 'C1', standard: 'IEC_62196_T2_COMBO', format: 'CABLE', power_type: 'DC', max_voltage: 920, max_ampere: 326, max_electric_power: 300000, tariff_ids: ['T-DC'], last_updated: now },
+    { id: 'C2', standard: 'CHADEMO', format: 'CABLE', power_type: 'DC', max_voltage: 500, max_ampere: 125, max_electric_power: 62500, tariff_ids: ['T-DC'], last_updated: now },
+  ];
+  if (hasAC) conns.push({ id: 'C3', standard: 'IEC_62196_T2', format: 'SOCKET', power_type: 'AC_3_PHASE', max_voltage: 400, max_ampere: 32, max_electric_power: 22000, tariff_ids: ['T-AC'], last_updated: now });
+  return { uid, status, connectors: conns, last_updated: now };
+}
+
+const FASTNED_FB_LOCS: OCPILocation[] = [
+  { id: 'FN-UK-001', name: 'Fastned Membury', address: 'M4 Motorway, Membury Services', city: 'Hungerford', country: 'GB', postal_code: 'RG17 7TZ', coordinates: { latitude: '51.4752', longitude: '-1.5374' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['RESTAURANT', 'TOILET', 'WIFI'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'CHARGING'), makeFastnedEVSE('E03', 'AVAILABLE'), makeFastnedEVSE('E04', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-002', name: 'Fastned Sunderland', address: 'Pallion Retail Park, Sunderland', city: 'Sunderland', country: 'GB', postal_code: 'SR4 6QL', coordinates: { latitude: '54.9003', longitude: '-1.4021' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['SUPERMARKET', 'TOILET'], opening_times: { twentyfourseven: true }, parking_type: 'PARKING_LOT', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'AVAILABLE'), makeFastnedEVSE('E03', 'INOPERATIVE'), makeFastnedEVSE('E04', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-003', name: 'Fastned Exeter', address: 'M5 Motorway, Exeter Services', city: 'Exeter', country: 'GB', postal_code: 'EX5 2LN', coordinates: { latitude: '50.7176', longitude: '-3.4755' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['RESTAURANT', 'TOILET', 'WIFI', 'HOTEL'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'CHARGING'), makeFastnedEVSE('E03', 'CHARGING'), makeFastnedEVSE('E04', 'AVAILABLE'), makeFastnedEVSE('E05', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-004', name: 'Fastned London Gateway', address: 'M25 Junction 31, London Gateway Services', city: 'Stanford-le-Hope', country: 'GB', postal_code: 'SS17 0PY', coordinates: { latitude: '51.5102', longitude: '0.4560' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['RESTAURANT', 'CAFE', 'TOILET', 'WIFI'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'AVAILABLE'), makeFastnedEVSE('E03', 'AVAILABLE'), makeFastnedEVSE('E04', 'CHARGING'), makeFastnedEVSE('E05', 'AVAILABLE'), makeFastnedEVSE('E06', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-005', name: 'Fastned Cambridge', address: 'A14 Westbound, Girton', city: 'Cambridge', country: 'GB', postal_code: 'CB3 0LB', coordinates: { latitude: '52.2261', longitude: '0.0543' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['CAFE', 'TOILET'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'AVAILABLE'), makeFastnedEVSE('E03', 'RESERVED'), makeFastnedEVSE('E04', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-006', name: 'Fastned Grantham North', address: 'A1(M) Northbound, Newark Road', city: 'Grantham', country: 'GB', postal_code: 'NG32 2AB', coordinates: { latitude: '52.9582', longitude: '-0.6425' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['TOILET', 'WIFI'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'CHARGING'), makeFastnedEVSE('E03', 'AVAILABLE'), makeFastnedEVSE('E04', 'AVAILABLE') ] },
+  { id: 'FN-UK-007', name: 'Fastned Milton Keynes', address: 'Magna Park, Lutterworth Road', city: 'Milton Keynes', country: 'GB', postal_code: 'MK17 0JP', coordinates: { latitude: '52.0486', longitude: '-0.7906' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['CAFE', 'TOILET', 'WIFI'], opening_times: { twentyfourseven: true }, parking_type: 'PARKING_LOT', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'AVAILABLE'), makeFastnedEVSE('E03', 'OUTOFORDER'), makeFastnedEVSE('E04', 'AVAILABLE', true) ] },
+  { id: 'FN-UK-008', name: 'Fastned Reading', address: 'M4 Junction 11, Reading', city: 'Reading', country: 'GB', postal_code: 'RG2 0PF', coordinates: { latitude: '51.4154', longitude: '-1.0124' }, operator: { name: 'Fastned' }, time_zone: 'Europe/London', facilities: ['RESTAURANT', 'TOILET', 'WIFI', 'SUPERMARKET'], opening_times: { twentyfourseven: true }, parking_type: 'ALONG_MOTORWAY', last_updated: new Date().toISOString(),
+    evses: [ makeFastnedEVSE('E01', 'AVAILABLE'), makeFastnedEVSE('E02', 'AVAILABLE'), makeFastnedEVSE('E03', 'CHARGING'), makeFastnedEVSE('E04', 'AVAILABLE'), makeFastnedEVSE('E05', 'AVAILABLE', true) ] },
+];
+
+function LiveDataDetail({ loc, tariffMap, onBack }: { loc: OCPILocation; tariffMap: Map<string, OCPITariff>; onBack: () => void }) {
+  const getTariff = (ids?: string[]) => { const tid = ids?.[0]; return tid ? tariffMap.get(tid) : undefined; };
+  const mapUrl = `https://www.google.com/maps?q=${loc.coordinates.latitude},${loc.coordinates.longitude}`;
+  return (
+    <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-2 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400">
+        <ChevronRight className="w-4 h-4 rotate-180" /> Back to stations
+      </button>
+      {/* Station header */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-800 dark:text-white">{loc.name}</h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{loc.operator?.name ?? 'Fastned'} · {loc.address}, {loc.city}, {loc.country}</p>
+          </div>
+          <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/40 border border-indigo-200 dark:border-indigo-800/40 shrink-0 ml-4">
+            <Navigation className="w-3.5 h-3.5" /> Navigate
+          </a>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          {[
+            { label: 'Opening Hours', val: loc.opening_times?.twentyfourseven ? '24 / 7' : 'Check app' },
+            { label: 'Time Zone',     val: loc.time_zone ?? 'Europe/London' },
+            { label: 'Parking',       val: loc.parking_type?.replace(/_/g, ' ') ?? '—' },
+            { label: 'Coordinates',   val: `${parseFloat(loc.coordinates.latitude).toFixed(4)}, ${parseFloat(loc.coordinates.longitude).toFixed(4)}` },
+          ].map(({ label, val }) => (
+            <div key={label}>
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">{label}</p>
+              <p className="text-xs font-medium text-slate-700 dark:text-slate-200">{val}</p>
+            </div>
+          ))}
+        </div>
+        {(loc.facilities ?? []).length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Amenities</p>
+            <div className="flex flex-wrap gap-2">
+              {loc.facilities!.map(f => (
+                <span key={f} className="flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
+                  {OCPI_FAC_EMOJI[f] ?? '•'} {f.replace(/_/g, ' ')}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {/* EVSEs */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-slate-100 dark:border-slate-800">
+          <h3 className="text-sm font-bold text-slate-800 dark:text-white">Chargers — {loc.evses?.length ?? 0} EVSEs</h3>
+        </div>
+        <div className="divide-y divide-slate-50 dark:divide-slate-800">
+          {(loc.evses ?? []).map(evse => (
+            <div key={evse.uid} className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-700 dark:text-slate-200">{evse.evse_id ?? evse.uid}</p>
+                  <p className="text-[10px] text-slate-400">Updated: {evse.last_updated ? new Date(evse.last_updated).toLocaleString() : 'just now'}</p>
+                </div>
+                <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${ocpiStatusCls(evse.status)}`}>{evse.status}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100 dark:border-slate-800">
+                      {['Connector', 'Power Type', 'Max kW', 'Price'].map(h => (
+                        <th key={h} className="text-left py-1.5 px-2 text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(evse.connectors ?? []).map(conn => (
+                      <tr key={conn.id} className="border-b border-slate-50 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                        <td className="py-2 px-2 font-semibold text-slate-700 dark:text-slate-200">{ocpiStd(conn.standard)}</td>
+                        <td className="py-2 px-2 text-slate-500 dark:text-slate-400">{ocpiPwr(conn.power_type)}</td>
+                        <td className="py-2 px-2 font-semibold text-indigo-600 dark:text-indigo-400">{ocpiKW(conn)} kW</td>
+                        <td className="py-2 px-2 font-semibold text-emerald-600 dark:text-emerald-400">{ocpiPrice(getTariff(conn.tariff_ids))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LiveDataWorkspace() {
+  const [locations, setLocations]   = useState<OCPILocation[]>([]);
+  const [tariffMap, setTariffMap]   = useState<Map<string, OCPITariff>>(new Map());
+  const [loading, setLoading]       = useState(false);
+  const [isDemo, setIsDemo]         = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [refreshInt, setRefreshInt] = useState(30);
+  const [countdown, setCountdown]   = useState(30);
+  const [search, setSearch]         = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [connFilter, setConnFilter] = useState('All');
+  const [minPower, setMinPower]     = useState(0);
+  const [open24h, setOpen24h]       = useState(false);
+  const [selectedLoc, setSelectedLoc] = useState<OCPILocation | null>(null);
+  const [page, setPage]             = useState(1);
+  const PG = 9;
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [locRes, tarRes] = await Promise.all([fetch(FASTNED_LOC_URL), fetch(FASTNED_TAR_URL)]);
+      const locData = locRes.ok ? await locRes.json() : {};
+      const tarData = tarRes.ok ? await tarRes.json() : {};
+      const locs: OCPILocation[] = locData.data ?? (Array.isArray(locData) ? locData : []);
+      const tars: OCPITariff[]   = tarData.data ?? (Array.isArray(tarData) ? tarData : []);
+      setLocations(locs.length ? locs : FASTNED_FB_LOCS);
+      setTariffMap(new Map(tars.length ? tars.map(t => [t.id, t]) : FASTNED_FB_TARIFFS.map(t => [t.id, t])));
+      setIsDemo(!locs.length);
+    } catch {
+      setLocations(FASTNED_FB_LOCS);
+      setTariffMap(new Map(FASTNED_FB_TARIFFS.map(t => [t.id, t])));
+      setIsDemo(true);
+    } finally {
+      setLoading(false);
+      setLastRefresh(new Date());
+      setCountdown(refreshInt);
+    }
+  }, [refreshInt]);
+
+  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { const t = setInterval(fetchAll, refreshInt * 1000); return () => clearInterval(t); }, [fetchAll, refreshInt]);
+  useEffect(() => {
+    if (!lastRefresh) return;
+    const t = setInterval(() => setCountdown(c => c <= 1 ? refreshInt : c - 1), 1000);
+    return () => clearInterval(t);
+  }, [lastRefresh, refreshInt]);
+
+  const allConnTypes = useMemo(() => {
+    const s = new Set<string>();
+    locations.forEach(l => l.evses?.forEach(e => e.connectors?.forEach(c => s.add(ocpiStd(c.standard)))));
+    return ['All', ...Array.from(s).sort()];
+  }, [locations]);
+
+  const filtered = useMemo(() => locations.filter(loc => {
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      if (!loc.name.toLowerCase().includes(q) && !loc.city.toLowerCase().includes(q) && !loc.address.toLowerCase().includes(q)) return false;
+    }
+    if (statusFilter === 'Available' && !loc.evses?.some(e => e.status === 'AVAILABLE')) return false;
+    if (connFilter !== 'All' && !loc.evses?.some(e => e.connectors?.some(c => ocpiStd(c.standard) === connFilter))) return false;
+    if (minPower > 0 && !loc.evses?.some(e => e.connectors?.some(c => ocpiKW(c) >= minPower))) return false;
+    if (open24h && !loc.opening_times?.twentyfourseven) return false;
+    return true;
+  }), [locations, search, statusFilter, connFilter, minPower, open24h]);
+
+  const paginated  = filtered.slice((page - 1) * PG, page * PG);
+  const totalPages = Math.ceil(filtered.length / PG);
+  const totEVSEs   = locations.reduce((a, l) => a + (l.evses?.length ?? 0), 0);
+  const availEVSEs = locations.reduce((a, l) => a + (l.evses?.filter(e => e.status === 'AVAILABLE').length ?? 0), 0);
+
+  const locPrice = (loc: OCPILocation) => {
+    for (const evse of loc.evses ?? []) for (const c of evse.connectors ?? []) { const t = tariffMap.get(c.tariff_ids?.[0] ?? ''); if (t) return ocpiPrice(t); }
+    return 'N/A';
+  };
+  const locMaxKW  = (loc: OCPILocation) => Math.max(0, ...(loc.evses?.flatMap(e => e.connectors?.map(c => ocpiKW(c)) ?? []) ?? []));
+  const locAvail  = (loc: OCPILocation) => loc.evses?.filter(e => e.status === 'AVAILABLE').length ?? 0;
+  const locTotal  = (loc: OCPILocation) => loc.evses?.length ?? 0;
+  const locConns  = (loc: OCPILocation) => [...new Set(loc.evses?.flatMap(e => e.connectors?.map(c => ocpiStd(c.standard)) ?? []) ?? [])];
+
+  if (selectedLoc) return <LiveDataDetail loc={selectedLoc} tariffMap={tariffMap} onBack={() => setSelectedLoc(null)} />;
+
+  return (
+    <div className="space-y-5">
+      <SectionHeader
+        title="Live Data — Fastned OCPI"
+        sub="Real-time EV charging · OCPI 2.2.1 Locations & Tariffs · Fastned UK"
+        action={
+          <div className="flex items-center gap-2 flex-wrap">
+            {lastRefresh && (
+              <span className={`text-[10px] flex items-center gap-1.5 px-2 py-1 rounded-full font-semibold ${isDemo ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full inline-block ${isDemo ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+                {isDemo ? 'Sample' : `Live · ${countdown}s`}
+              </span>
+            )}
+            <select value={refreshInt} onChange={e => setRefreshInt(Number(e.target.value))}
+              className="text-xs border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+              <option value={30}>Every 30s</option>
+              <option value={60}>Every 60s</option>
+              <option value={120}>Every 2 min</option>
+            </select>
+            <button onClick={fetchAll} disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50">
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+          </div>
+        }
+      />
+
+      {isDemo && (
+        <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 rounded-xl px-4 py-3">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>Showing sample Fastned UK data — the OCPI API is unreachable from this origin (CORS). Add a server-side proxy at <code className="font-mono bg-amber-100 dark:bg-amber-900/30 px-1 rounded">/api/fastned/locations</code> to stream live data.</span>
+        </div>
+      )}
+
+      {/* Summary stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: 'Stations',        val: String(filtered.length),  cls: 'text-indigo-600 dark:text-indigo-400',  bg: 'bg-indigo-50 border-indigo-100 dark:border-indigo-900/40'  },
+          { label: 'Available EVSEs', val: String(availEVSEs),       cls: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 border-emerald-100 dark:border-emerald-900/40' },
+          { label: 'Total EVSEs',     val: String(totEVSEs),         cls: 'text-violet-600 dark:text-violet-400',   bg: 'bg-violet-50 border-violet-100 dark:border-violet-900/40'   },
+          { label: 'Network',         val: 'Fastned UK',             cls: 'text-amber-600 dark:text-amber-400',     bg: 'bg-amber-50 border-amber-100 dark:border-amber-900/40'      },
+        ].map(({ label, val, cls, bg }) => (
+          <div key={label} className={`rounded-xl border p-4 dark:bg-slate-900 ${bg}`}>
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">{label}</p>
+            <p className={`text-2xl font-black ${cls}`}>{val}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search station, city…"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+          className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+          <option value="All">All Status</option>
+          <option value="Available">Available Now</option>
+        </select>
+        <select value={connFilter} onChange={e => { setConnFilter(e.target.value); setPage(1); }}
+          className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+          {allConnTypes.map(t => <option key={t} value={t}>{t === 'All' ? 'All Connectors' : t}</option>)}
+        </select>
+        <select value={minPower} onChange={e => { setMinPower(Number(e.target.value)); setPage(1); }}
+          className="text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+          <option value={0}>Any Power</option>
+          <option value={22}>22 kW+</option>
+          <option value={50}>50 kW+</option>
+          <option value={150}>150 kW+</option>
+          <option value={300}>300 kW+</option>
+        </select>
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" checked={open24h} onChange={e => { setOpen24h(e.target.checked); setPage(1); }} className="w-4 h-4 rounded accent-indigo-600" />
+          Open 24h
+        </label>
+      </div>
+
+      {/* Loading */}
+      {loading && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 animate-pulse h-52">
+              <div className="h-5 bg-slate-200 dark:bg-slate-700 rounded w-3/5 mb-2" />
+              <div className="h-3 bg-slate-100 dark:bg-slate-800 rounded w-2/5 mb-4" />
+              <div className="flex gap-2 mb-4">{[1,2].map(j => <div key={j} className="h-5 w-14 bg-slate-100 dark:bg-slate-800 rounded-full" />)}</div>
+              <div className="grid grid-cols-3 gap-2">{[1,2,3].map(j => <div key={j} className="h-14 bg-slate-100 dark:bg-slate-800 rounded-lg" />)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Empty */}
+      {!loading && filtered.length === 0 && (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-14 text-center">
+          <Zap className="w-12 h-12 text-slate-300 dark:text-slate-700 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">No stations match</p>
+          <p className="text-xs text-slate-400 mt-1">Try adjusting your filters.</p>
+        </div>
+      )}
+
+      {/* Station cards */}
+      {!loading && paginated.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {paginated.map(loc => {
+            const avail = locAvail(loc);
+            const total = locTotal(loc);
+            const kw    = locMaxKW(loc);
+            const price = locPrice(loc);
+            const conns = locConns(loc);
+            const statusOk = avail > 0;
+            return (
+              <button key={loc.id} onClick={() => setSelectedLoc(loc)}
+                className="text-left bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 hover:shadow-md dark:hover:shadow-indigo-900/20 transition-all group">
+                {/* Header */}
+                <div className="flex items-start justify-between mb-3">
+                  <div className="min-w-0 flex-1 mr-2">
+                    <p className="text-sm font-bold text-slate-800 dark:text-white truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{loc.name}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{loc.city}, {loc.country}</p>
+                  </div>
+                  <span className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusOk ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'}`}>
+                    {statusOk ? 'Available' : 'Busy'}
+                  </span>
+                </div>
+                {/* Connector chips */}
+                <div className="flex flex-wrap gap-1 mb-3">
+                  {conns.slice(0, 4).map(c => (
+                    <span key={c} className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:border-indigo-800/30">{c}</span>
+                  ))}
+                </div>
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {[
+                    { label: 'Max Power', val: kw > 0 ? `${kw} kW` : '—', cls: 'text-slate-800 dark:text-white' },
+                    { label: 'Available', val: `${avail}/${total}`,         cls: 'text-emerald-600 dark:text-emerald-400' },
+                    { label: 'Price',     val: price,                       cls: 'text-indigo-600 dark:text-indigo-400' },
+                  ].map(({ label, val, cls }) => (
+                    <div key={label} className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2 text-center">
+                      <p className={`text-xs font-black truncate ${cls}`}>{val}</p>
+                      <p className="text-[9px] text-slate-400 mt-0.5">{label}</p>
+                    </div>
+                  ))}
+                </div>
+                {/* Footer */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    {loc.opening_times?.twentyfourseven && (
+                      <span className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">24/7</span>
+                    )}
+                    {(loc.facilities ?? []).slice(0, 3).map(f => (
+                      <span key={f} title={f.replace(/_/g, ' ')} className="text-sm leading-none">{OCPI_FAC_EMOJI[f] ?? ''}</span>
+                    ))}
+                  </div>
+                  <span className="text-[10px] font-semibold text-indigo-500 group-hover:text-indigo-700 dark:text-indigo-400 dark:group-hover:text-indigo-300 flex items-center gap-0.5 transition-colors">
+                    Details <ArrowRight className="w-3 h-3" />
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Showing {(page - 1) * PG + 1}–{Math.min(page * PG, filtered.length)} of {filtered.length} stations
+          </p>
+          <div className="flex gap-1">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40">← Prev</button>
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              const p = page <= 3 ? i + 1 : page + i - 2;
+              if (p < 1 || p > totalPages) return null;
+              return <button key={p} onClick={() => setPage(p)} className={`px-3 py-1.5 rounded-lg text-xs border ${p === page ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>{p}</button>;
+            })}
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+              className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40">Next →</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderLiveData() { return <LiveDataWorkspace />; }
+
 function renderAPIKeys() { return <APIKeysWorkspace />; }
 
 type EvseRow = { name:string; city:string; country:string; evses:number; available:string; quality:number; protocol:string; operator:string; power:string; connectors:string; lastSync:string };
@@ -10124,6 +10609,7 @@ export default function ClientPortal() {
       case 'api_keys':         return renderAPIKeys();
       case 'nearby_stations':  return renderNearbyStations();
       case 'access':           return renderAccess();
+      case 'live_data':        return renderLiveData();
       default:                 return null;
     }
   };
