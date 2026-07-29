@@ -53,3 +53,27 @@ export async function fetchMarketplaceNetworks(tenantId: string): Promise<DbNetw
   if (error) { console.error('fetchMarketplaceNetworks:', error.message); return []; }
   return (data as DbNetwork[]) ?? [];
 }
+
+export interface DbDispute {
+  id: string; cdr: string; partner: string; amount: number; currency: string;
+  reason: string; status: string; priority: string;
+  createdAt: string; updatedAt: string; agingDays: number;
+  description: string; evidence: string[]; resolution: string | null;
+}
+
+export async function fetchDisputes(tenantId: string): Promise<DbDispute[]> {
+  const { data, error } = await supabase.rpc('get_disputes', { p_tenant_id: tenantId });
+  if (error) { console.error('fetchDisputes:', error.message); return []; }
+  return (data as DbDispute[]) ?? [];
+}
+
+export interface DbInvoice {
+  id: string; partner: string; period: string; cdrCount: number;
+  amount: number; issued: string; due: string; status: string;
+}
+
+export async function fetchInvoices(tenantId: string): Promise<DbInvoice[]> {
+  const { data, error } = await supabase.rpc('get_invoices', { p_tenant_id: tenantId });
+  if (error) { console.error('fetchInvoices:', error.message); return []; }
+  return (data as DbInvoice[]) ?? [];
+}

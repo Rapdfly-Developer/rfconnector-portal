@@ -8,7 +8,7 @@
  *  Clearing  : Supervision · Tracking · Check & Bill · Disputes · Invoicing · Messaging
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { fetchDashboardKPIs, fetchMarketplaceNetworks, VOLTA_TENANT_ID, type DashboardKPIs, type DbNetwork } from '../lib/supabase';
+import { fetchDashboardKPIs, fetchMarketplaceNetworks, fetchDisputes, fetchInvoices, VOLTA_TENANT_ID, type DashboardKPIs, type DbNetwork, type DbDispute, type DbInvoice } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNavigate } from 'react-router-dom';
@@ -7732,16 +7732,16 @@ interface DisputeRecord {
 }
 
 const ALL_DISPUTES: DisputeRecord[] = [
-  { id:'DIS-2026-0041', cdr:'CDR-8817', partner:'VRA EV Charge',       amount:0.73, currency:'GHS', reason:'Energy mismatch',    status:'open',             priority:'high',     createdAt:'2026-06-19', updatedAt:'2026-06-22', agingDays:4,  description:'Session CDR-8817 reports 14.8 kWh but our OCPP meter log shows 13.2 kWh delivered. Requesting credit for 1.6 kWh at the agreed tariff rate.',     evidence:['CDR-8817-export.csv','meter_log_20260619.pdf'], resolution:undefined },
-  { id:'DIS-2026-0039', cdr:'CDR-8800', partner:'Total Energies Ghana', amount:1.20, currency:'GHS', reason:'Tariff discrepancy', status:'in_review',         priority:'high',     createdAt:'2026-06-18', updatedAt:'2026-06-23', agingDays:5,  description:'Charged at ₵ 0.42/kWh but our bilateral agreement specifies ₵ 0.38/kWh. Difference of ₵ 0.04/kWh over 30 kWh session = ₵ 1.20 overbilled.',            evidence:['tariff-agreement-signed.pdf','CDR-8800.json'],   resolution:undefined },
-  { id:'DIS-2026-0038', cdr:'CDR-8788', partner:'ECG Ghana',     amount:0.55, currency:'GHS', reason:'Duplicate CDR',      status:'awaiting_partner', priority:'medium',   createdAt:'2026-06-17', updatedAt:'2026-06-21', agingDays:6,  description:'CDR-8788 appears twice in the June clearing batch. Second entry has identical session ID, timestamp and kWh readingclearly a system duplicate.',   evidence:['clearing-batch-june.xlsx'],                      resolution:undefined },
-  { id:'DIS-2026-0037', cdr:'CDR-8775', partner:'Goil EV Network',        amount:3.40, currency:'GHS', reason:'Tariff discrepancy', status:'escalated',         priority:'critical', createdAt:'2026-06-14', updatedAt:'2026-06-20', agingDays:9,  description:'Goil EV Network applied premium DC pricing to an AC session. OCPI session type field was mis-sent as "DC_QUICK"this affected 4 CDRs totalling ₵ 3.40.',       evidence:['ionity-session-log.json','ocpi-debug-trace.txt'], resolution:undefined },
-  { id:'DIS-2026-0031', cdr:'CDR-8700', partner:'Goil EV Network',        amount:2.10, currency:'GHS', reason:'Invalid timestamp',  status:'resolved',          priority:'low',      createdAt:'2026-06-08', updatedAt:'2026-06-18', agingDays:15, description:'Timestamp discrepancy of 2 hours caused session to be split across two billing periods. Resolved by Goil EV Networkcredit note issued.',                 evidence:['CDR-8700.json'],                                 resolution:'Goil EV Network issued credit note CR-2026-0112 for ₵ 2.10 on 18 Jun. Posted to next clearing cycle.' },
-  { id:'DIS-2026-0029', cdr:'CDR-8680', partner:'Shell Ghana EV',         amount:0.88, currency:'GHS', reason:'Energy mismatch',    status:'rejected',          priority:'low',      createdAt:'2026-06-05', updatedAt:'2026-06-15', agingDays:18, description:'Shell Ghana EV provided OCPP metering data contradicting our claim. Their logs show 14.1 kWh which matches CDR-8680 figure of 14.1 kWh. Dispute rejected.',   evidence:['CDR-8680.json','evbox-meter-counter-evidence.pdf'], resolution:'Shell Ghana EV provided counter-evidence. CDR data verified correct. Dispute closed 15 Jun.' },
-  { id:'DIS-2026-0022', cdr:'CDR-8601', partner:'VRA EV Charge',       amount:0.31, currency:'GHS', reason:'Duplicate CDR',      status:'resolved',          priority:'low',      createdAt:'2026-05-28', updatedAt:'2026-06-04', agingDays:26, description:'Duplicate CDR submitted in May batch. VRA EV Charge confirmed and removed the entry from their clearing file.',                                              evidence:['may-clearing-batch.xlsx'],                       resolution:'VRA EV Charge confirmed duplicate and removed from clearing. Credit applied in June settlement.' },
+  { id:'DIS-2026-0041', cdr:'CDR-8817', partner:'IONITY GmbH',           amount:14.80, currency:'EUR', reason:'Energy mismatch',    status:'open',             priority:'high',     createdAt:'2026-07-19', updatedAt:'2026-07-22', agingDays:7,  description:'Session CDR-8817 reports 14.8 kWh but our OCPP meter log shows 13.2 kWh delivered. Requesting credit for 1.6 kWh at the agreed IONITY HPC tariff rate of €0.79/kWh.',    evidence:['CDR-8817-export.csv','meter_log_20260719.pdf'], resolution:undefined },
+  { id:'DIS-2026-0039', cdr:'CDR-8800', partner:'EnBW mobility+',         amount:22.40, currency:'EUR', reason:'Tariff discrepancy', status:'in_review',         priority:'high',     createdAt:'2026-07-18', updatedAt:'2026-07-23', agingDays:8,  description:'Charged at €0.54/kWh but bilateral agreement specifies €0.47/kWh. Difference of €0.07/kWh over 320 kWh session batch = €22.40 overbilled.',                             evidence:['tariff-agreement-signed.pdf','CDR-8800.json'],   resolution:undefined },
+  { id:'DIS-2026-0038', cdr:'CDR-8788', partner:'Allego Deutschland',     amount:8.50,  currency:'EUR', reason:'Duplicate CDR',      status:'awaiting_partner', priority:'medium',   createdAt:'2026-07-17', updatedAt:'2026-07-21', agingDays:9,  description:'CDR-8788 appears twice in the July clearing batch. Second entry has identical session ID, timestamp and kWh reading — clearly a system duplicate.',                      evidence:['clearing-batch-july.xlsx'],                      resolution:undefined },
+  { id:'DIS-2026-0037', cdr:'CDR-8775', partner:'Fastned Deutschland',    amount:31.20, currency:'EUR', reason:'Tariff discrepancy', status:'escalated',         priority:'critical', createdAt:'2026-07-14', updatedAt:'2026-07-20', agingDays:12, description:'Fastned applied HPC premium pricing to an AC session. OCPI session type field was mis-sent as "DC_FAST" — this affected 4 CDRs totalling €31.20.',                          evidence:['fastned-session-log.json','ocpi-debug-trace.txt'], resolution:undefined },
+  { id:'DIS-2026-0031', cdr:'CDR-8700', partner:'Shell Recharge Germany', amount:18.60, currency:'EUR', reason:'Invalid timestamp',  status:'resolved',          priority:'low',      createdAt:'2026-07-08', updatedAt:'2026-07-18', agingDays:18, description:'Timestamp discrepancy of 2 hours caused session to be split across two billing periods. Resolved by Shell Recharge Germany — credit note issued.',                    evidence:['CDR-8700.json'],                                 resolution:'Shell Recharge Germany issued credit note CR-2026-0112 for €18.60 on 18 Jul. Posted to next clearing cycle.' },
+  { id:'DIS-2026-0029', cdr:'CDR-8680', partner:'Elli (Volkswagen)',      amount:9.80,  currency:'EUR', reason:'Energy mismatch',    status:'rejected',          priority:'low',      createdAt:'2026-07-05', updatedAt:'2026-07-15', agingDays:21, description:'Elli provided OCPP metering data contradicting our claim. Their logs show 14.1 kWh which matches CDR-8680 figure of 14.1 kWh. Dispute rejected.',                            evidence:['CDR-8680.json','elli-meter-counter-evidence.pdf'], resolution:'Elli (VW) provided counter-evidence. CDR data verified correct. Dispute closed 15 Jul.' },
+  { id:'DIS-2026-0022', cdr:'CDR-8601', partner:'IONITY GmbH',            amount:5.20,  currency:'EUR', reason:'Duplicate CDR',      status:'resolved',          priority:'low',      createdAt:'2026-06-28', updatedAt:'2026-07-04', agingDays:28, description:'Duplicate CDR submitted in June batch. IONITY confirmed and removed the entry from their clearing file.',                                                                   evidence:['june-clearing-batch.xlsx'],                      resolution:'IONITY GmbH confirmed duplicate and removed from clearing. Credit applied in July settlement.' },
 ];
 
-const EMPTY_DISPUTE_FORM = { cdrId:'', partner:'', amount:'', currency:'GHS', reason:'', description:'' };
+const EMPTY_DISPUTE_FORM = { cdrId:'', partner:'', amount:'', currency:'EUR', reason:'', description:'' };
 
 type DisputeSortKey = 'id'|'partner'|'amount'|'agingDays'|'updatedAt'|'status'|'priority';
 
@@ -7759,7 +7759,12 @@ function DisputesDashboard() {
   const [submitted,    setSubmitted]    = useState(false);
   const [actionMsg,    setActionMsg]    = useState<string|null>(null);
 
-  const [disputes, setDisputes] = useLocalStorage<DisputeRecord[]>('cb_disputes', ALL_DISPUTES);
+  const [disputes, setDisputes] = useState<DisputeRecord[]>(ALL_DISPUTES);
+  useEffect(() => {
+    fetchDisputes(VOLTA_TENANT_ID).then(rows => {
+      if (rows.length) setDisputes(rows.map(r => ({ ...r, resolution: r.resolution ?? undefined })));
+    });
+  }, []);
   const detailRef = useRef<HTMLDivElement>(null);
 
   const updateStatus = (id: string, status: DisputeRecord['status']) => {
@@ -8012,7 +8017,7 @@ function DisputesDashboard() {
                     </td>
                     <td className="px-4 py-3 font-medium text-slate-800">{d.partner}</td>
                     <td className="px-4 py-3">
-                      <span className="font-bold text-slate-800">₵ {d.amount.toFixed(2)}</span>
+                      <span className="font-bold text-slate-800">€ {d.amount.toFixed(2)}</span>
                     </td>
                     <td className="px-4 py-3 text-slate-600 text-xs">{d.reason}</td>
                     <td className="px-4 py-3">
@@ -8070,7 +8075,7 @@ function DisputesDashboard() {
                   </span>
                   <span className={`text-xs font-semibold capitalize ${agingClass(selected.agingDays)}`}>· {selected.agingDays}d old</span>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">{selected.partner} · {selected.cdr} · ₵ {selected.amount.toFixed(2)} {selected.currency}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{selected.partner} · {selected.cdr} · € {selected.amount.toFixed(2)} {selected.currency}</p>
               </div>
             </div>
             <button data-local onClick={() => setSelected(null)} className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:bg-slate-200">
@@ -8267,12 +8272,12 @@ function renderDisputes() {
 }
 
 const INVOICES = [
-  { id: 'INV-2025-0061', partner: 'ECG Ghana',     period: 'Jun 2025', cdrCount: 28441, amount: 11880, issued: '2025-07-01', due: '2025-07-31', status: 'Unpaid'  },
-  { id: 'INV-2025-0060', partner: 'Total Energies Ghana', period: 'Jun 2025', cdrCount: 21882, amount:  7320, issued: '2025-07-01', due: '2025-07-31', status: 'Unpaid'  },
-  { id: 'INV-2025-0058', partner: 'Goil EV Network',        period: 'Jun 2025', cdrCount: 14200, amount: 19990, issued: '2025-07-01', due: '2025-07-31', status: 'Unpaid'  },
-  { id: 'INV-2025-0051', partner: 'ECG Ghana',     period: 'May 2025', cdrCount: 26100, amount: 10440, issued: '2025-06-01', due: '2025-06-30', status: 'Paid'    },
-  { id: 'INV-2025-0050', partner: 'Total Energies Ghana', period: 'May 2025', cdrCount: 19800, amount:  6930, issued: '2025-06-01', due: '2025-06-30', status: 'Paid'    },
-  { id: 'INV-2025-0049', partner: 'Goil EV Network',        period: 'May 2025', cdrCount: 13400, amount: 18900, issued: '2025-06-01', due: '2025-06-30', status: 'Paid'    },
+  { id: 'INV-2026-0061', partner: 'IONITY GmbH',        period: 'Jul 2026', cdrCount: 28441, amount: 118800, issued: '2026-08-01', due: '2026-08-31', status: 'Unpaid' },
+  { id: 'INV-2026-0060', partner: 'EnBW mobility+',      period: 'Jul 2026', cdrCount: 21882, amount:  73200, issued: '2026-08-01', due: '2026-08-31', status: 'Unpaid' },
+  { id: 'INV-2026-0058', partner: 'Fastned Deutschland', period: 'Jul 2026', cdrCount: 14200, amount:  42600, issued: '2026-08-01', due: '2026-08-31', status: 'Unpaid' },
+  { id: 'INV-2026-0051', partner: 'IONITY GmbH',        period: 'Jun 2026', cdrCount: 26100, amount: 104400, issued: '2026-07-01', due: '2026-07-31', status: 'Paid'   },
+  { id: 'INV-2026-0050', partner: 'EnBW mobility+',      period: 'Jun 2026', cdrCount: 19800, amount:  69300, issued: '2026-07-01', due: '2026-07-31', status: 'Paid'   },
+  { id: 'INV-2026-0049', partner: 'Fastned Deutschland', period: 'Jun 2026', cdrCount: 13400, amount:  40200, issued: '2026-07-01', due: '2026-07-31', status: 'Paid'   },
 ];
 
 function downloadInvoiceCSV(inv: typeof INVOICES[0]) {
@@ -8286,7 +8291,7 @@ function downloadInvoiceCSV(inv: typeof INVOICES[0]) {
     ['Issue Date', inv.issued],
     ['Due Date', inv.due],
     ['Status', inv.status],
-    ['Currency', '₵ GHS'],
+    ['Currency', '€ EUR'],
     ['Operator', 'Volta Networks'],
     ['Generated', new Date().toISOString()],
   ];
@@ -8302,12 +8307,19 @@ function downloadInvoiceCSV(inv: typeof INVOICES[0]) {
 
 function InvoicingWorkspace() {
   const [periodFilter, setPeriodFilter] = useState('All Periods');
+  const [allInvoices, setAllInvoices] = useState(INVOICES);
 
-  const periods = ['All Periods', 'Jun 2025', 'May 2025'];
+  useEffect(() => {
+    fetchInvoices(VOLTA_TENANT_ID).then(rows => {
+      if (rows.length) setAllInvoices(rows as typeof INVOICES);
+    });
+  }, []);
+
+  const periods = ['All Periods', ...Array.from(new Set(allInvoices.map(i => i.period)))];
 
   const filtered = periodFilter === 'All Periods'
-    ? INVOICES
-    : INVOICES.filter(inv => inv.period === periodFilter);
+    ? allInvoices
+    : allInvoices.filter(inv => inv.period === periodFilter);
 
   const totalBilled  = filtered.reduce((a, inv) => a + inv.amount, 0);
   const totalPaid    = filtered.filter(inv => inv.status === 'Paid').reduce((a, inv) => a + inv.amount, 0);
@@ -8326,10 +8338,10 @@ function InvoicingWorkspace() {
       {/* Summary cards  reactive to filter */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { l: `Total Billed (${periodLabel})`, v: `₵ ${totalBilled.toLocaleString()}`,  color: 'text-slate-800'   },
-          { l: 'Paid',                           v: `₵ ${totalPaid.toLocaleString()}`,    color: 'text-emerald-600' },
-          { l: 'Outstanding',                    v: `₵ ${outstanding.toLocaleString()}`,  color: 'text-amber-600'   },
-          { l: 'Overdue',                        v: `₵ ${overdue.toLocaleString()}`,      color: 'text-rose-500'    },
+          { l: `Total Billed (${periodLabel})`, v: `€ ${totalBilled.toLocaleString()}`,  color: 'text-slate-800'   },
+          { l: 'Paid',                           v: `€ ${totalPaid.toLocaleString()}`,    color: 'text-emerald-600' },
+          { l: 'Outstanding',                    v: `€ ${outstanding.toLocaleString()}`,  color: 'text-amber-600'   },
+          { l: 'Overdue',                        v: `€ ${overdue.toLocaleString()}`,      color: 'text-rose-500'    },
         ].map(s => (
           <div key={s.l} className="bg-white rounded-xl border border-slate-100 p-4 text-center">
             <div className={`text-2xl font-bold ${s.color}`}>{s.v}</div>
@@ -8379,7 +8391,7 @@ function InvoicingWorkspace() {
                     <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">{inv.period}</span>
                   </td>
                   <td className="py-3 px-4 text-slate-600 tabular-nums whitespace-nowrap">{inv.cdrCount.toLocaleString()}</td>
-                  <td className="py-3 px-4 font-bold tabular-nums whitespace-nowrap text-slate-800">₵ {inv.amount.toLocaleString()}</td>
+                  <td className="py-3 px-4 font-bold tabular-nums whitespace-nowrap text-slate-800">€ {inv.amount.toLocaleString()}</td>
                   <td className="py-3 px-4 text-slate-500 whitespace-nowrap">{inv.issued}</td>
                   <td className="py-3 px-4 text-slate-500 whitespace-nowrap">{inv.due}</td>
                   <td className="py-3 px-4">
@@ -8416,9 +8428,9 @@ function InvoicingWorkspace() {
           <div className="border-t border-slate-100 px-5 py-3 flex items-center justify-between bg-slate-50/50">
             <span className="text-xs text-slate-400">{filtered.length} invoice{filtered.length !== 1 ? 's' : ''} · {filtered.reduce((a,i)=>a+i.cdrCount,0).toLocaleString()} CDRs</span>
             <span className="text-sm font-bold text-slate-700">
-              Total: <span className="text-indigo-600">₵ {totalBilled.toLocaleString()}</span>
-              <span className="ml-3 text-emerald-600 text-xs font-semibold">Paid: ₵ {totalPaid.toLocaleString()}</span>
-              <span className="ml-3 text-amber-600 text-xs font-semibold">Outstanding: ₵ {outstanding.toLocaleString()}</span>
+              Total: <span className="text-indigo-600">€ {totalBilled.toLocaleString()}</span>
+              <span className="ml-3 text-emerald-600 text-xs font-semibold">Paid: € {totalPaid.toLocaleString()}</span>
+              <span className="ml-3 text-amber-600 text-xs font-semibold">Outstanding: € {outstanding.toLocaleString()}</span>
             </span>
           </div>
         )}
