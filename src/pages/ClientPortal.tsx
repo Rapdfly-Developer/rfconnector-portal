@@ -2805,6 +2805,37 @@ function MarketplaceWorkspace() {
     ? liveForSelected
     : MARKETPLACE_ACCESS_POINTS.filter(pt => pt.network === selectedNetwork.name);
 
+  // Aggregate real connector-level counts from TomTom chargingAvailability for the selected network
+  const livePanelCounts = useMemo(() => {
+    if (!liveRaw.length || !availabilityMap.size) return null;
+    let available = 0, occupied = 0, reserved = 0, outOfService = 0;
+    for (const { item } of liveRaw) {
+      const rawOp = item.poi?.brands?.[0]?.name
+        ?? item.poi?.classifications?.[0]?.names?.[0]?.name
+        ?? '';
+      if (resolveOperatorName(rawOp) !== selectedNetwork.name) continue;
+      const a = availabilityMap.get(item.id ?? '');
+      if (!a) continue;
+      available    += a.available;
+      occupied     += a.occupied;
+      reserved     += a.reserved;
+      outOfService += a.outOfService;
+    }
+    const total = available + occupied + reserved + outOfService;
+    if (total === 0) return null;
+    return { available, charging: occupied + reserved, outOfService, total };
+  }, [liveRaw, availabilityMap, selectedNetwork.name]);
+
+  // Hubject data for selected network (authoritative total + status when configured)
+  const hubjectForSelected = hubjectConfigured ? lookupHubject(selectedNetwork.name) : undefined;
+
+  // Final EVSE counts for the detail panel — priority: Hubject > TomTom live > static
+  const detailTotalEvses    = hubjectForSelected?.totalEVSEs ?? livePanelCounts?.total ?? selectedNetwork.evses;
+  const detailAvailable     = hubjectForSelected?.available  ?? livePanelCounts?.available    ?? selectedNetwork.evseAvailable;
+  const detailCharging      = hubjectForSelected ? (hubjectForSelected.occupied + hubjectForSelected.charging) : (livePanelCounts?.charging ?? selectedNetwork.evseCharging);
+  const detailOutOfService  = hubjectForSelected ? (hubjectForSelected.outOfService + hubjectForSelected.offline) : (livePanelCounts?.outOfService ?? selectedNetwork.evseInoperative);
+  const detailIsLive        = !!(hubjectForSelected || livePanelCounts);
+
   const selectNetwork = (n: MarketplaceNetwork) => {
     hasUserSelectedNetwork.current = true;
     setSelectedNetwork(n);
@@ -3101,7 +3132,7 @@ function MarketplaceWorkspace() {
             {[
               ['Role',           selectedNetwork.role],
               ['Protocol',       selectedNetwork.protocol],
-              ['EVSEs',          selectedNetwork.evses.toLocaleString()],
+              ['EVSEs',          detailTotalEvses.toLocaleString()],
               ['Latency',        selectedNetwork.latency],
               ['Availability',   `${selectedNetwork.availability}%`],
               ['Agreement',      selectedNetwork.agreement ? 'Active' : 'None'],
@@ -3125,16 +3156,24 @@ function MarketplaceWorkspace() {
           {/* EVSE availability mini-bar */}
           <div className="px-4 py-2.5 border-b border-slate-100">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">EVSE Status</span>
-              <span className="text-[10px] text-slate-400">{selectedNetwork.evses} total</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">EVSE Status</span>
+                {detailIsLive && hubjectForSelected && (
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">● Hubject</span>
+                )}
+                {detailIsLive && !hubjectForSelected && livePanelCounts && (
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">● Live</span>
+                )}
+              </div>
+              <span className="text-[10px] text-slate-400">{detailTotalEvses.toLocaleString()} total</span>
             </div>
             <div className="h-2 rounded-full bg-slate-100 overflow-hidden flex">
-              <div className="bg-emerald-400" style={{ width: `${(selectedNetwork.evseAvailable/selectedNetwork.evses)*100}%` }} />
-              <div className="bg-blue-400"    style={{ width: `${(selectedNetwork.evseCharging/selectedNetwork.evses)*100}%` }} />
-              <div className="bg-rose-400"    style={{ width: `${(selectedNetwork.evseInoperative/selectedNetwork.evses)*100}%` }} />
+              <div className="bg-emerald-400" style={{ width: `${(detailAvailable/Math.max(detailTotalEvses,1))*100}%` }} />
+              <div className="bg-blue-400"    style={{ width: `${(detailCharging/Math.max(detailTotalEvses,1))*100}%` }} />
+              <div className="bg-rose-400"    style={{ width: `${(detailOutOfService/Math.max(detailTotalEvses,1))*100}%` }} />
             </div>
             <div className="flex gap-3 mt-1">
-              {[['bg-emerald-400','Available',selectedNetwork.evseAvailable],['bg-blue-400','Charging',selectedNetwork.evseCharging],['bg-rose-400','Inop.',selectedNetwork.evseInoperative]].map(([c,l,v])=>(
+              {[['bg-emerald-400','Available',detailAvailable],['bg-blue-400','Charging',detailCharging],['bg-rose-400','Inop.',detailOutOfService]].map(([c,l,v])=>(
                 <div key={String(l)} className="flex items-center gap-1"><div className={`w-1.5 h-1.5 rounded-full ${c}`}/><span className="text-[9px] text-slate-400">{l} {v}</span></div>
               ))}
             </div>
