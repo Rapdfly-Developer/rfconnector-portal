@@ -1694,7 +1694,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
   const [refreshing, setRefreshing] = useState(false);
 
   /* Live EV station data — shared across KPI cards + LiveStationsPanel */
-  const { stations: liveStations, loading: liveLoading, error: liveError, updatedAt: liveUpdatedAt } = useLiveStations();
+  const { stations: liveStations, loading: liveLoading, isDemo: liveIsDemo, updatedAt: liveUpdatedAt } = useLiveStations();
 
   /* Derived KPIs from live TomTom data */
   const liveActiveSessions  = liveStations.reduce((s, st) => s + st.occupiedConnectors, 0);
@@ -1814,8 +1814,8 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
       </div>
 
 
-      {/* Live EV Stations Nearby — real TomTom API data */}
-      <LiveStationsPanel goTo={goTo} stations={liveStations} loading={liveLoading} error={liveError} updatedAt={liveUpdatedAt} />
+      {/* EV Stations Nearby — live TomTom data or sample fallback */}
+      <LiveStationsPanel goTo={goTo} stations={liveStations} loading={liveLoading} isDemo={liveIsDemo} updatedAt={liveUpdatedAt} />
 
       {/* â"₵â"₵ Primary KPI row â"₵â"₵ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -2120,12 +2120,41 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
 }
 
 /* ── Live EV Stations panel (Overview) ─────────────────────────────────────── */
-/* Hook — fetches live stations once and refreshes every 30s */
+/* Hook — fetches live stations once and refreshes every 30s; falls back to sample data on API failure */
 function useLiveStations() {
   const [stations, setStations] = useState<ChargingStation[]>([]);
   const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState('');
+  const [isDemo, setIsDemo]     = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+
+  // Build sample stations from the static MARKETPLACE_ACCESS_POINTS array (no API needed)
+  const buildFallbackStations = (): ChargingStation[] =>
+    MARKETPLACE_ACCESS_POINTS.slice(0, 8).map((ap, i) => {
+      const conns    = simulateOCPI(ap.id, ap.connectorCount);
+      const available = conns.filter(c => c.status === 'Available').length;
+      const occupied  = conns.filter(c => c.status === 'Occupied').length;
+      const waiting   = conns.reduce((s, c) => s + c.waitingDrivers, 0);
+      const baseDist  = [0.4, 0.9, 1.3, 2.1, 2.8, 3.5, 4.2, 5.0][i] ?? i + 0.5;
+      return {
+        id:                  ap.id,
+        stationName:         ap.name,
+        latitude:            ap.lat,
+        longitude:           ap.lng,
+        address:             `${ap.city}, ${ap.country}`,
+        connectorType:       ap.connectors,
+        availableConnectors: available,
+        occupiedConnectors:  occupied,
+        totalConnectors:     ap.connectorCount,
+        chargingSpeed:       ap.maxPower,
+        stationStatus:       (available > 0 ? 'Available' : occupied > 0 ? 'Busy' : 'Offline') as ChargingStation['stationStatus'],
+        operatingHours:      '24/7',
+        distance:            baseDist,
+        waitingDrivers:      waiting,
+        estimatedWaitTime:   waiting * 15,
+        connectors:          conns,
+        lastUpdated:         'sample data',
+      };
+    });
 
   useEffect(() => {
     let cancelled = false;
@@ -2135,7 +2164,11 @@ function useLiveStations() {
       try {
         const url = `https://api.tomtom.com/search/2/nearbySearch/.json?lat=${lat}&lon=${lng}&radius=10000&categorySet=7309&limit=20&key=${TOMTOM_KEY}`;
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`TomTom ${res.status}`);
+        if (!res.ok) {
+          // API unavailable (quota / key): show sample data instead of an error
+          if (!cancelled) { setStations(buildFallbackStations()); setIsDemo(true); setUpdatedAt(new Date()); }
+          return;
+        }
         const data: any = await res.json();
         if (cancelled) return;
         const mapped: ChargingStation[] = ((data.results ?? []) as any[]).map((item: any) => {
@@ -2167,11 +2200,9 @@ function useLiveStations() {
             lastUpdated:         rf.lastUpdated,
           };
         });
-        setStations(mapped);
-        setUpdatedAt(new Date());
-        setError('');
+        if (!cancelled) { setStations(mapped); setIsDemo(false); setUpdatedAt(new Date()); }
       } catch {
-        if (!cancelled) setError('Could not load live station data.');
+        if (!cancelled) { setStations(buildFallbackStations()); setIsDemo(true); setUpdatedAt(new Date()); }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -2186,20 +2217,21 @@ function useLiveStations() {
     start(52.5200, 13.4050);
 
     return () => { cancelled = true; if (timer) clearInterval(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { stations, loading, error, updatedAt };
+  return { stations, loading, isDemo, updatedAt };
 }
 
 interface LiveStationsPanelProps {
   goTo:      (id: NavId) => void;
   stations:  ChargingStation[];
   loading:   boolean;
-  error:     string;
+  isDemo:    boolean;
   updatedAt: Date | null;
 }
 
-function LiveStationsPanel({ goTo, stations, loading, error, updatedAt }: LiveStationsPanelProps) {
+function LiveStationsPanel({ goTo, stations, loading, isDemo, updatedAt }: LiveStationsPanelProps) {
   const totalAvailable = stations.filter(s => s.stationStatus === 'Available').length;
   const totalBusy      = stations.filter(s => s.stationStatus === 'Busy').length;
   const totalWaiting   = stations.reduce((s, x) => s + x.waitingDrivers, 0);
@@ -2214,14 +2246,20 @@ function LiveStationsPanel({ goTo, stations, loading, error, updatedAt }: LiveSt
           </div>
           <div>
             <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
-              Live EV Stations Nearby
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
-              </span>
+              EV Stations Nearby
+              {isDemo ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Sample
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live
+                </span>
+              )}
             </h3>
             <p className="text-[10px] text-slate-400">
-              TomTom · OCPI status · refreshes every 30s
-              {updatedAt && ` · updated ${updatedAt.toLocaleTimeString()}`}
+              {isDemo ? 'Sample data · connect TomTom API for live status' : 'TomTom · OCPI status · refreshes every 30s'}
+              {updatedAt && !isDemo && ` · updated ${updatedAt.toLocaleTimeString()}`}
             </p>
           </div>
         </div>
@@ -2230,10 +2268,6 @@ function LiveStationsPanel({ goTo, stations, loading, error, updatedAt }: LiveSt
 
       {loading ? (
         <div className="px-4 py-6 text-center text-xs text-slate-400">Loading nearby stations…</div>
-      ) : error ? (
-        <div className="px-4 py-6 text-center text-xs text-rose-500 flex items-center justify-center gap-1.5">
-          <AlertTriangle className="w-3.5 h-3.5" /> {error}
-        </div>
       ) : stations.length === 0 ? (
         <div className="px-4 py-6 text-center text-xs text-slate-400">No stations found within 10 KM.</div>
       ) : (
