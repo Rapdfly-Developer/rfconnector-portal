@@ -7,7 +7,8 @@
  *  Roaming   : EVSE Repository · Tariffs · Authorisation · Events · CDR Exchange
  *  Clearing  : Supervision · Tracking · Check & Bill · Disputes · Invoicing · Messaging
  */
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { fetchDashboardKPIs, VOLTA_TENANT_ID, type DashboardKPIs } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNavigate } from 'react-router-dom';
@@ -1647,10 +1648,22 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
   /* Live EV station data — shared across KPI cards + LiveStationsPanel */
   const { stations: liveStations, loading: liveLoading, error: liveError, updatedAt: liveUpdatedAt } = useLiveStations();
 
-  /* Derived KPIs from live data */
+  /* Derived KPIs from live TomTom data */
   const liveActiveSessions  = liveStations.reduce((s, st) => s + st.occupiedConnectors, 0);
   const liveConnectedEVSEs  = liveStations.reduce((s, st) => s + st.totalConnectors, 0);
   const liveActivePartners  = new Set(liveStations.map(st => st.stationName.split(' ')[0])).size;
+
+  /* Supabase KPIs — real financial + CDR data */
+  const [dbKpis, setDbKpis] = useState<DashboardKPIs | null>(null);
+  const [dbLoading, setDbLoading] = useState(true);
+  useEffect(() => {
+    fetchDashboardKPIs(VOLTA_TENANT_ID).then(data => {
+      setDbKpis(data);
+      setDbLoading(false);
+    });
+  }, []);
+  const fmt = (n: number) => n >= 1000 ? n.toLocaleString() : String(n);
+  const fmtCurrency = (n: number) => `₵ ${n >= 1000 ? (n/1000).toFixed(1) + 'K' : n.toFixed(0)}`;
 
   const handleRefresh = () => {
     if (refreshing) return;
@@ -1755,10 +1768,10 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
       {/* â"₵â"₵ Primary KPI row â"₵â"₵ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { title:'Active Sessions',  value: liveLoading ? '…' : String(liveActiveSessions),  sub:'Right now · live',        icon:Zap,           trend:'+12%',  up:true,  spark:[42,55,48,61,70,74,liveActiveSessions||78], color:'#6366f1', nav:'events'       as NavId, badge:'Live' },
-          { title:'CDRs This Month',  value:'94,231',   sub:'Jun 2026',             icon:FileText,      trend:'+8%',   up:true,  spark:[72,78,81,84,88,91,94],              color:'#6366f1', nav:'cdr_exchange'  as NavId, badge:null   },
-          { title:'Roaming Revenue',  value:'₵ 38,440', sub:'Billed this month',    icon:TrendingUp,    trend:'+5.2%', up:true,  spark:[28,30.4,31.9,33.2,36.8,38.4],      color:'#10b981', nav:'invoicing'     as NavId, badge:null   },
-          { title:'Open Disputes',    value:'4',        sub:'Require attention',    icon:AlertTriangle, trend:'-2 today', up:true, spark:[8,6,5,7,6,5,4],                  color:'#f59e0b', nav:'disputes'      as NavId, badge:'4 open' },
+          { title:'Active Sessions',  value: liveLoading ? '…' : String(liveActiveSessions),  sub:'Right now · live',  icon:Zap,           trend:'+12%',  up:true,  spark:[42,55,48,61,70,74,liveActiveSessions||78], color:'#6366f1', nav:'events'       as NavId, badge:'Live' },
+          { title:'CDRs This Month',  value: dbLoading ? '…' : fmt(dbKpis?.sessions_this_month ?? 0),  sub:'Sessions this month', icon:FileText, trend:'+8%', up:true, spark:[72,78,81,84,88,91,dbKpis?.sessions_this_month??94], color:'#6366f1', nav:'cdr_exchange' as NavId, badge:null },
+          { title:'Roaming Revenue',  value: dbLoading ? '…' : fmtCurrency(dbKpis?.revenue_this_month ?? 0), sub:'Invoiced this month', icon:TrendingUp, trend:'+5.2%', up:true, spark:[28,30.4,31.9,33.2,36.8,38.4,dbKpis?.revenue_this_month??38440], color:'#10b981', nav:'invoicing' as NavId, badge:null },
+          { title:'Open Disputes',    value: dbLoading ? '…' : fmt(dbKpis?.disputes_open ?? 0), sub:'Require attention', icon:AlertTriangle, trend:'-2 today', up:true, spark:[8,6,5,7,6,5,dbKpis?.disputes_open??4], color:'#f59e0b', nav:'disputes' as NavId, badge: dbKpis ? `${dbKpis.disputes_open} open` : '4 open' },
         ].map(k => (
           <button key={k.title} data-local onClick={() => goTo(k.nav)}
             className="bg-white rounded-xl border border-slate-200 p-4 text-left hover:border-indigo-300 hover:shadow-md transition-all group focus:outline-none focus:ring-2 focus:ring-indigo-300">
@@ -1787,7 +1800,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
           { title:'Active Partners',   value: liveLoading ? '…' : String(liveActivePartners || 16),  sub:'CPOs + eMSPs · live',      icon:Network,    spark:[10,11,12,13,15,liveActivePartners||16],    nav:'marketplace'  as NavId },
           { title:'Connected EVSEs',   value: liveLoading ? '…' : liveConnectedEVSEs > 0 ? liveConnectedEVSEs.toLocaleString() : '12,840', sub: liveConnectedEVSEs > 0 ? `${liveStations.length} stations · live` : 'of 13,200 total (97%)', icon:MapPin, spark:[12200,12400,12600,12700,12800,liveConnectedEVSEs||12840], nav:'evse_repo' as NavId },
           { title:'Auth Success Rate', value:'99.3%',  sub:'Last 24 h · +0.1%',    icon:ShieldCheck,spark:[98.8,99.0,99.1,99.0,99.2,99.3], nav:'authorisation' as NavId },
-          { title:'Pending Invoices',  value:'6',      sub:'₵ 39,190 outstanding',  icon:Receipt,    spark:[3,4,5,5,6,6],          nav:'invoicing'    as NavId },
+          { title:'Pending Invoices',  value: dbLoading ? '…' : fmt(dbKpis?.invoices_pending ?? 0), sub: dbKpis ? `₵ ${dbKpis.invoices_outstanding.toLocaleString()} outstanding` : '₵ 39,190 outstanding', icon:Receipt, spark:[3,4,5,5,6,dbKpis?.invoices_pending??6], nav:'invoicing' as NavId },
         ].map(k => (
           <button key={k.title} data-local onClick={() => goTo(k.nav)}
             className="bg-white rounded-xl border border-slate-100 px-4 py-3 text-left hover:border-indigo-200 hover:shadow-sm transition-all group focus:outline-none focus:ring-2 focus:ring-indigo-300 flex items-center gap-3">
