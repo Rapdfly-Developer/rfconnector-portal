@@ -1647,7 +1647,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
     });
   }, []);
   const fmt = (n: number) => n >= 1000 ? n.toLocaleString() : String(n);
-  const fmtCurrency = (n: number) => `₵ ${n >= 1000 ? (n/1000).toFixed(1) + 'K' : n.toFixed(0)}`;
+  const fmtCurrency = (n: number) => `€ ${n >= 1000 ? (n/1000).toFixed(1) + 'K' : n.toFixed(0)}`;
 
   const handleRefresh = () => {
     if (refreshing) return;
@@ -1659,49 +1659,53 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
   };
 
   const ALERTS = [
-    { id:'a1', sev:'critical', icon: WifiOff,      title:'VRA EV Charge API offline',             body:'Connection down 18 min · 3 active sessions impacted',         cta:'Check Connectivity', nav:'marketplace' as NavId },
-    { id:'a2', sev:'warning',  icon: Receipt,       title:'Invoice overdueGoil EV Network',        body:'INV-2026-0058 · ₵ 19,990 · 13 days past due',                  cta:'View Invoice',       nav:'invoicing'   as NavId },
-    { id:'a3', sev:'warning',  icon: AlertTriangle, title:'4 disputes need your response',   body:'DIS-2026-0041 (VRA EV Charge) open 4 days with no partner reply',    cta:'Open Disputes',      nav:'disputes'    as NavId },
+    { id:'a1', sev:'critical', icon: WifiOff,      title:'E.ON Drive API latency spike',          body:'Latency 3× baseline for 22 min · 5 active sessions impacted',   cta:'Check Connectivity', nav:'marketplace' as NavId },
+    { id:'a2', sev:'warning',  icon: Receipt,       title:'Invoice overdue — Fastned Deutschland', body:'INV-2026-0058 · € 42,600 · 13 days past due',                   cta:'View Invoice',       nav:'invoicing'   as NavId },
+    { id:'a3', sev:'warning',  icon: AlertTriangle, title:'4 disputes need your response',         body:'DIS-2026-0037 (Fastned) escalated 12 days · no partner reply',   cta:'Open Disputes',      nav:'disputes'    as NavId },
   ];
   const visibleAlerts = ALERTS.filter(a => !dismissedAlerts.includes(a.id));
 
   const partners = [
-    { name:'ECG Ghana',     proto:'OCPI 2.2', ok:true,  ms:42, uptime:99.9, sla:'✓' },
-    { name:'Total Energies Ghana', proto:'OCPI 2.2', ok:true,  ms:78, uptime:99.7, sla:'✓' },
-    { name:'Goil EV Network',        proto:'OCPI 2.2', ok:true,  ms:55, uptime:99.8, sla:'✓' },
-    { name:'VRA EV Charge',       proto:'OCPI 2.2', ok:false, ms:0,  uptime:98.1, sla:'!' },
-    { name:'Shell Ghana EV', proto:'OCPI 2.2', ok:true,  ms:91, uptime:99.5, sla:'✓' },
-    { name:'GreenMobility GH',proto:'OCPI 2.2', ok:true,  ms:63, uptime:99.6, sla:'✓' },
+    { name:'IONITY GmbH',           proto:'OCPI 2.2', ok:true,  ms:22, uptime:99.9, sla:'✓' },
+    { name:'EnBW mobility+',         proto:'OCPI 2.2', ok:true,  ms:18, uptime:99.8, sla:'✓' },
+    { name:'Allego Deutschland',     proto:'OCPI 2.2', ok:true,  ms:31, uptime:99.5, sla:'✓' },
+    { name:'E.ON Drive',             proto:'OCPI 2.2', ok:false, ms:0,  uptime:98.3, sla:'!' },
+    { name:'Fastned Deutschland',    proto:'OCPI 2.2', ok:true,  ms:29, uptime:99.6, sla:'✓' },
+    { name:'Shell Recharge Germany', proto:'OCPI 2.2', ok:true,  ms:35, uptime:99.4, sla:'✓' },
   ];
   const offlineCount = partners.filter(p => !p.ok).length;
   const systemOk = offlineCount === 0 && visibleAlerts.filter(a => a.sev === 'critical').length === 0;
   const systemWarn = !systemOk && offlineCount < 2;
 
-  const revenueMonths = [
-    { m:'Jan', actual:28.1, forecast:null },
-    { m:'Feb', actual:30.4, forecast:null },
-    { m:'Mar', actual:31.9, forecast:null },
-    { m:'Apr', actual:33.2, forecast:null },
-    { m:'May', actual:36.8, forecast:null },
-    { m:'Jun', actual:38.4, forecast:null },
-    { m:'Jul', actual:null, forecast:41.2 },
-    { m:'Aug', actual:null, forecast:44.0 },
+  const _mnames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const _curM = new Date().getMonth(); // 0-indexed, July = 6
+  const _pastRev = dbKpis?.revenue_last_6_months ?? [];
+  const _lastRev = _pastRev[_pastRev.length - 1]?.revenue ?? 39.7;
+  const revenueMonths: { m:string; actual:number|null; forecast:number|null }[] = [
+    ..._pastRev.map(r => ({ m: r.m, actual: r.revenue, forecast: null })),
+    { m: _mnames[_curM],           actual: null, forecast: Math.round(_lastRev * 1.034 * 10) / 10 },
+    { m: _mnames[(_curM+1) % 12], actual: null, forecast: Math.round(_lastRev * 1.034 * 1.034 * 10) / 10 },
   ];
-  const maxRev = 50;
+  const maxRev = Math.ceil(Math.max(...revenueMonths.map(d => d.actual ?? d.forecast ?? 0), 45) / 5) * 5;
 
-  const cdrMonths = [
-    { m:'Jan', cur:58, prev:41 }, { m:'Feb', cur:63, prev:47 },
-    { m:'Mar', cur:71, prev:52 }, { m:'Apr', cur:80, prev:60 },
-    { m:'May', cur:87, prev:65 }, { m:'Jun', cur:94, prev:70 },
-  ];
+  const _pastCdr = dbKpis?.cdr_last_6_months ?? [];
+  const cdrMonths = _pastCdr.length
+    ? _pastCdr
+    : [
+        { m:'Jan', cur:2.0, prev:1.5 }, { m:'Feb', cur:1.8, prev:1.3 },
+        { m:'Mar', cur:2.0, prev:1.5 }, { m:'Apr', cur:1.9, prev:1.4 },
+        { m:'May', cur:2.0, prev:1.5 }, { m:'Jun', cur:1.9, prev:1.4 },
+      ];
+  const cdrMax = Math.ceil(Math.max(...cdrMonths.map(d => d.cur), 3));
   const CHART_H = 140;
 
+  const _fRev = revenueMonths.find(d => d.forecast !== null);
   const insights = [
-    { icon:'📈', text:'CDR volume has grown 35% YoYJun 2026 pace is your highest ever.' },
-    { icon:'⚠️', text:'VRA EV Charge latency spiked 3× before going offlinemonitor for recurrence after reconnection.' },
-    { icon:'💰', text:'Revenue forecast projects 41.2K GHS in Juldriven by Goil EV Network session growth (+18% MoM).' },
-    { icon:'🔍', text:'Energy mismatch disputes are up 2× this month. Consider automated meter-log cross-check.' },
-    { icon:'✅', text:'Auth success rate 99.3%highest in 90 days. No action required.' },
+    { icon:'📈', text:`CDR volume up 35% YoY — Jun 2026 (${cdrMonths.find(d=>d.m==='Jun')?.cur?.toFixed(1) ?? '1.9'}K sessions) is your highest month ever.` },
+    { icon:'⚠️', text:'E.ON Drive latency spiked 3× before degrading — monitor for recurrence after API stabilises.' },
+    { icon:'💰', text:`Revenue forecast projects €${_fRev?.forecast ?? 41}K in ${_fRev?.m ?? 'Jul'} — driven by IONITY session growth (+8% MoM).` },
+    { icon:'🔍', text:'Tariff discrepancy disputes up 2× this month. Consider automated Eichrecht CDR cross-check.' },
+    { icon:'✅', text:'Auth success rate 99.3% — highest in 90 days across all German roaming partners.' },
   ];
 
   const funnel = [
@@ -1784,7 +1788,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
           { title:'Active Partners',   value: liveLoading ? '…' : String(liveActivePartners || 16),  sub:'CPOs + eMSPs · live',      icon:Network,    spark:[10,11,12,13,15,liveActivePartners||16],    nav:'marketplace'  as NavId },
           { title:'Connected EVSEs',   value: liveLoading ? '…' : liveConnectedEVSEs > 0 ? liveConnectedEVSEs.toLocaleString() : '12,840', sub: liveConnectedEVSEs > 0 ? `${liveStations.length} stations · live` : 'of 13,200 total (97%)', icon:MapPin, spark:[12200,12400,12600,12700,12800,liveConnectedEVSEs||12840], nav:'evse_repo' as NavId },
           { title:'Auth Success Rate', value:'99.3%',  sub:'Last 24 h · +0.1%',    icon:ShieldCheck,spark:[98.8,99.0,99.1,99.0,99.2,99.3], nav:'authorisation' as NavId },
-          { title:'Pending Invoices',  value: dbLoading ? '…' : fmt(dbKpis?.invoices_pending ?? 0), sub: dbKpis ? `₵ ${dbKpis.invoices_outstanding.toLocaleString()} outstanding` : '₵ 39,190 outstanding', icon:Receipt, spark:[3,4,5,5,6,dbKpis?.invoices_pending??6], nav:'invoicing' as NavId },
+          { title:'Pending Invoices',  value: dbLoading ? '…' : fmt(dbKpis?.invoices_pending ?? 0), sub: dbKpis ? `€ ${dbKpis.invoices_outstanding.toLocaleString()} outstanding` : '€ 234,600 outstanding', icon:Receipt, spark:[3,4,5,5,6,dbKpis?.invoices_pending??6], nav:'invoicing' as NavId },
         ].map(k => (
           <button key={k.title} data-local onClick={() => goTo(k.nav)}
             className="bg-white rounded-xl border border-slate-100 px-4 py-3 text-left hover:border-indigo-200 hover:shadow-sm transition-all group focus:outline-none focus:ring-2 focus:ring-indigo-300 flex items-center gap-3">
@@ -1895,11 +1899,11 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
               </thead>
               <tbody>
                 {[
-                  { id:'#8821', partner:'ECG Ghana',           kwh:'24.7', amt:'₵ 8.41',  status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
-                  { id:'#8820', partner:'Total Energies Ghana',kwh:'11.2', amt:'₵ 3.81',  status:'Pending',   sc:'bg-amber-100 text-amber-700'   },
-                  { id:'#8819', partner:'Goil EV Network',     kwh:'62.0', amt:'₵ 22.10', status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
-                  { id:'#8817', partner:'VRA EV Charge',       kwh:'8.4',  amt:'₵ 2.94',  status:'Disputed',  sc:'bg-rose-100 text-rose-700'     },
-                  { id:'#8815', partner:'Shell Ghana EV',      kwh:'33.1', amt:'₵ 11.25', status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
+                  { id:'#8821', partner:'IONITY GmbH',           kwh:'47.2', amt:'€ 25.96', status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
+                  { id:'#8820', partner:'EnBW mobility+',       kwh:'31.8', amt:'€ 17.49', status:'Pending',   sc:'bg-amber-100 text-amber-700'   },
+                  { id:'#8819', partner:'Fastned Deutschland',  kwh:'58.4', amt:'€ 32.12', status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
+                  { id:'#8817', partner:'IONITY GmbH',           kwh:'14.8', amt:'€ 8.14',  status:'Disputed',  sc:'bg-rose-100 text-rose-700'     },
+                  { id:'#8815', partner:'Shell Recharge Germany',kwh:'29.6', amt:'€ 16.28', status:'Validated', sc:'bg-emerald-100 text-emerald-700' },
                 ].map(r => (
                   <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
                     <td className="py-2.5 px-3"><span className="font-mono text-indigo-600 font-semibold">{r.id}</span></td>
@@ -1936,14 +1940,14 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
             {[25, 50, 75, 100].map(pct => (
               <div key={pct} className="absolute inset-x-0 border-t border-slate-100 flex items-center" style={{ bottom:`${pct}%` }}>
                 <span className="text-[9px] text-slate-300 translate-y-3 pr-1 w-7 text-right shrink-0">
-                  {pct === 100 ? '100K' : pct === 75 ? '75K' : pct === 50 ? '50K' : '25K'}
+                  {Math.round(cdrMax * pct / 100)}K
                 </span>
               </div>
             ))}
             <div className="absolute inset-0 flex items-end gap-1.5 pl-8">
               {cdrMonths.map(d => {
-                const curH  = Math.round((d.cur  / 100) * CHART_H);
-                const prevH = Math.round((d.prev / 100) * CHART_H);
+                const curH  = Math.round((d.cur  / cdrMax) * CHART_H);
+                const prevH = Math.round((d.prev / cdrMax) * CHART_H);
                 const pct   = Math.round(((d.cur - d.prev) / d.prev) * 100);
                 return (
                   <div key={d.m} className="flex-1 flex flex-col items-center group">
@@ -1963,12 +1967,20 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
             {cdrMonths.map(d => <div key={d.m} className="flex-1 text-center text-[10px] text-slate-400">{d.m}</div>)}
           </div>
           <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
-            {[
-              { label:'Total 2026', value:'453K', up:true  },
-              { label:'Total 2025', value:'335K', up:false },
-              { label:'YoY',        value:'+35%', up:true  },
-              { label:'MoM',        value:'+8%',  up:true  },
-            ].map(s => (
+            {(() => {
+              const total26 = cdrMonths.reduce((s,d) => s+d.cur, 0);
+              const total25 = cdrMonths.reduce((s,d) => s+d.prev, 0);
+              const yoy = total25 > 0 ? Math.round(((total26-total25)/total25)*100) : 0;
+              const last = cdrMonths[cdrMonths.length-1];
+              const prev = cdrMonths[cdrMonths.length-2];
+              const mom = prev?.cur > 0 ? Math.round(((last.cur-prev.cur)/prev.cur)*100) : 0;
+              return [
+                { label:'Total 2026', value:`${total26.toFixed(1)}K`, up:true  },
+                { label:'Total 2025', value:`${total25.toFixed(1)}K`, up:false },
+                { label:'YoY',        value:`+${yoy}%`,               up:true  },
+                { label:'MoM',        value:`${mom >= 0 ? '+' : ''}${mom}%`, up:mom>=0 },
+              ];
+            })().map(s => (
               <div key={s.label} className="flex-1 text-center">
                 <p className={`text-xs font-bold ${s.up ? 'text-indigo-600' : 'text-slate-500'}`}>{s.value}</p>
                 <p className="text-[9px] text-slate-400 mt-0.5">{s.label}</p>
@@ -1982,7 +1994,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
           <div className="flex items-start justify-between mb-1">
             <div>
               <h3 className="text-sm font-bold text-slate-700">Revenue Forecast</h3>
-              <p className="text-[10px] text-slate-400 mt-0.5">Actual + 2-month projection · ₵K</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Actual + 2-month projection · €K</p>
             </div>
             <div className="flex items-center gap-3 text-[10px] text-slate-500">
               <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-500" />Actual</span>
@@ -2003,7 +2015,7 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
                 return (
                   <div key={d.m} className="flex-1 flex flex-col items-center group">
                     <div className="opacity-0 group-hover:opacity-100 transition-opacity mb-1 bg-emerald-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap">
-                      ₵ {val}K
+                      € {val}K
                     </div>
                     <div className="w-full flex items-end justify-center" style={{ height: CHART_H }}>
                       <div className={`w-8/12 rounded-t transition-colors ${isForecast ? 'bg-emerald-200 border border-dashed border-emerald-400 hover:bg-emerald-300' : 'bg-emerald-500 hover:bg-emerald-600'}`}
@@ -2018,12 +2030,18 @@ function OverviewWorkspace({ goTo }: { goTo: (id: NavId) => void }) {
             {revenueMonths.map(d => <div key={d.m} className={`flex-1 text-center text-[10px] ${d.actual === null ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`}>{d.m}</div>)}
           </div>
           <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
-            {[
-              { label:'Jun Actual',   value:'₵ 38.4K', color:'text-emerald-600' },
-              { label:'Jul Forecast', value:'₵ 41.2K', color:'text-emerald-500' },
-              { label:'Aug Forecast', value:'₵ 44.0K', color:'text-emerald-500' },
-              { label:'Q3 Target',    value:'₵ 120K',  color:'text-indigo-600'  },
-            ].map(s => (
+            {(() => {
+              const lastActual = revenueMonths.filter(d => d.actual !== null).slice(-1)[0];
+              const forecasts  = revenueMonths.filter(d => d.forecast !== null);
+              const f1 = forecasts[0], f2 = forecasts[1];
+              const q3 = Math.round(((lastActual?.actual ?? 39.7) * (1.034 ** 1) + (lastActual?.actual ?? 39.7) * (1.034 ** 2) + (lastActual?.actual ?? 39.7) * (1.034 ** 3)) * 10) / 10;
+              return [
+                { label:`${lastActual?.m ?? 'Jun'} Actual`,  value:`€ ${lastActual?.actual ?? 39.7}K`, color:'text-emerald-600' },
+                { label:`${f1?.m ?? 'Jul'} Forecast`,         value:`€ ${f1?.forecast ?? 41.0}K`,       color:'text-emerald-500' },
+                { label:`${f2?.m ?? 'Aug'} Forecast`,         value:`€ ${f2?.forecast ?? 42.4}K`,       color:'text-emerald-500' },
+                { label:'Q3 Target',                           value:`€ ${q3}K`,                         color:'text-indigo-600'  },
+              ];
+            })().map(s => (
               <div key={s.label} className="flex-1 text-center">
                 <p className={`text-xs font-bold ${s.color}`}>{s.value}</p>
                 <p className="text-[9px] text-slate-400 mt-0.5">{s.label}</p>

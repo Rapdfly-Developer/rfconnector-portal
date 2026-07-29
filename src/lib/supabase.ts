@@ -19,6 +19,7 @@ export interface DashboardKPIs {
   stations_total:        number;
   stations_online:       number;
   revenue_last_6_months: { m: string; revenue: number }[];
+  cdr_last_6_months:     { m: string; cur: number; prev: number }[];
 }
 
 export async function fetchDashboardKPIs(tenantId: string): Promise<DashboardKPIs | null> {
