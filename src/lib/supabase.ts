@@ -26,3 +26,30 @@ export async function fetchDashboardKPIs(tenantId: string): Promise<DashboardKPI
   if (error) { console.error('fetchDashboardKPIs:', error.message); return null; }
   return data as DashboardKPIs;
 }
+
+export interface DbNetwork {
+  id: string;
+  name: string;
+  country_code: string;
+  party_id: string;
+  role: string;
+  protocol: string;
+  ocpi_version: string | null;
+  evse_count: number;
+  status: string;
+  metadata: {
+    city: string; latency: string; quality: string; coverage: string;
+    avail: number; evseAvail: number; evseChrg: number; evseInop: number;
+    health: string; partnerSince: string | null; description: string;
+  };
+  has_agreement: boolean;
+  agreement_status: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+}
+
+export async function fetchMarketplaceNetworks(tenantId: string): Promise<DbNetwork[]> {
+  const { data, error } = await supabase.rpc('get_marketplace_networks', { p_tenant_id: tenantId });
+  if (error) { console.error('fetchMarketplaceNetworks:', error.message); return []; }
+  return (data as DbNetwork[]) ?? [];
+}

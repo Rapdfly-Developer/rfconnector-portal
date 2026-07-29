@@ -8,7 +8,7 @@
  *  Clearing  : Supervision · Tracking · Check & Bill · Disputes · Invoicing · Messaging
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { fetchDashboardKPIs, VOLTA_TENANT_ID, type DashboardKPIs } from '../lib/supabase';
+import { fetchDashboardKPIs, fetchMarketplaceNetworks, VOLTA_TENANT_ID, type DashboardKPIs, type DbNetwork } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNavigate } from 'react-router-dom';
@@ -2477,7 +2477,51 @@ function MarketplaceWorkspace() {
   const step1Valid    = addForm.name.trim() !== '' && addForm.city.trim() !== '';
   const step2Valid    = addForm.evses.trim() !== '' && Number(addForm.evses) > 0;
 
-  const networks = MARKETPLACE_NETWORKS;
+  /* ── Supabase: live network list ── */
+  const [dbNetworks, setDbNetworks] = useState<DbNetwork[]>([]);
+  const [dbNetworksLoading, setDbNetworksLoading] = useState(true);
+  useEffect(() => {
+    fetchMarketplaceNetworks(VOLTA_TENANT_ID).then(rows => {
+      setDbNetworks(rows);
+      setDbNetworksLoading(false);
+    });
+  }, []);
+
+  // Map DbNetwork → MarketplaceNetwork so all downstream UI logic stays unchanged
+  const networks: MarketplaceNetwork[] = dbNetworksLoading || dbNetworks.length === 0
+    ? MARKETPLACE_NETWORKS
+    : dbNetworks.map(r => {
+        const m = r.metadata;
+        const uiStatus: MarketplaceNetwork['status'] =
+          r.status === 'active' ? 'Active'
+          : r.status === 'in_negotiation' ? 'Negotiating'
+          : 'New Connection';
+        const mapX: Record<string,number> = { 'ECG (Electricity Co. Ghana)':38,'VRA EV Charge':42,'Goil EV Network':35,'Shell Ghana EV':28,'Total Energies Ghana':40,'GreenMobility GH':39,'ZOTC Nigeria':52,"CIE Côte d'Ivoire":30,'Eletrobras EV Brasil':28,'Voltbras Networks':30,'Charge Now México':15,'EnVolt México':14,'Enel X Colombia':20,'Zeta Energy Chile':18,'YPF Luz EV Argentina':22,'Evolta Argentina':21 };
+        const mapY: Record<string,number> = { 'ECG (Electricity Co. Ghana)':55,'VRA EV Charge':53,'Goil EV Network':48,'Shell Ghana EV':58,'Total Energies Ghana':56,'GreenMobility GH':55,'ZOTC Nigeria':52,"CIE Côte d'Ivoire":56,'Eletrobras EV Brasil':65,'Voltbras Networks':63,'Charge Now México':52,'EnVolt México':54,'Enel X Colombia':60,'Zeta Energy Chile':72,'YPF Luz EV Argentina':75,'Evolta Argentina':73 };
+        return {
+          name: r.name,
+          country: r.country_code,
+          evses: r.evse_count,
+          protocol: r.ocpi_version ? `OCPI ${r.ocpi_version}` : r.protocol,
+          role: r.role === 'EMSP' ? 'eMSP' : r.role,
+          status: uiStatus,
+          agreement: r.has_agreement,
+          city: m.city,
+          latency: m.latency,
+          quality: m.quality,
+          x: mapX[r.name] ?? 40,
+          y: mapY[r.name] ?? 50,
+          lastSync: '—',
+          coverageArea: m.coverage,
+          availability: m.avail,
+          partnerSince: m.partnerSince ?? undefined,
+          connectionHealth: m.health as MarketplaceNetwork['connectionHealth'],
+          evseAvailable: m.evseAvail,
+          evseCharging: m.evseChrg,
+          evseInoperative: m.evseInop,
+          description: m.description,
+        };
+      });
 
   const statusColor: Record<string, string> = {
     'Active':      'bg-emerald-50 text-emerald-700',
@@ -2524,14 +2568,22 @@ function MarketplaceWorkspace() {
       && (effectiveStatusFilter === 'All Statuses' || network.status === effectiveStatusFilter);
   });
 
-  const totalEvses    = networks.reduce((s, n) => s + n.evses, 0);
+  // EVSE status: prefer live TomTom counts; fall back to DB metadata when TomTom hasn't loaded yet
+  const liveTotalEvses    = liveAccessPoints.length;
+  const liveTotalAvail    = liveAccessPoints.filter(ap => ap.status === 'Available').length;
+  const liveTotalCharging = liveAccessPoints.filter(ap => ap.status === 'Charging').length;
+  const liveTotalInop     = liveAccessPoints.filter(ap => ap.status === 'Inoperative').length;
+  const useLive           = liveTotalEvses > 0;
+
+  const totalEvses    = useLive ? liveTotalEvses    : networks.reduce((s, n) => s + n.evses, 0);
+  const totalAvail    = useLive ? liveTotalAvail    : networks.reduce((s, n) => s + n.evseAvailable, 0);
+  const totalCharging = useLive ? liveTotalCharging : networks.reduce((s, n) => s + n.evseCharging, 0);
+  const totalInop     = useLive ? liveTotalInop     : networks.reduce((s, n) => s + n.evseInoperative, 0);
+
   const activeNets    = networks.filter(n => n.status === 'Active').length;
   const negNets       = networks.filter(n => n.status === 'Negotiating').length;
   const discNets      = networks.filter(n => n.status === 'New Connection').length;
-  const totalAvail    = networks.reduce((s, n) => s + n.evseAvailable, 0);
-  const totalCharging = networks.reduce((s, n) => s + n.evseCharging, 0);
-  const totalInop     = networks.reduce((s, n) => s + n.evseInoperative, 0);
-  const avgAvail      = Math.round(networks.reduce((s, n) => s + n.availability, 0) / networks.length);
+  const avgAvail      = Math.round(networks.reduce((s, n) => s + n.availability, 0) / (networks.length || 1));
   const lastSyncActive = syncElapsed || networks.filter(n => n.status === 'Active').map(n => n.lastSync)[0] || '--';
 
   const selectedNetworkAccessPoints = MARKETPLACE_ACCESS_POINTS.filter(pt => pt.network === selectedNetwork.name);
