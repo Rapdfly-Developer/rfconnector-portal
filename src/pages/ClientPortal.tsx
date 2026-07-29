@@ -2477,12 +2477,20 @@ function MarketplaceWorkspace() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  /* ── Live TomTom station layer — real stations in partner-network cities ── */
+  /* ── Live TomTom station layer — all major German cities ── */
   const LIVE_CITY_SOURCES = [
-    { city: 'Berlin',    country: 'DE', lat: 52.5200, lng: 13.4050 },
-    { city: 'Munich',    country: 'DE', lat: 48.1351, lng: 11.5820 },
-    { city: 'Hamburg',   country: 'DE', lat: 53.5753, lng: 10.0153 },
-    { city: 'Frankfurt', country: 'DE', lat: 50.1109, lng: 8.6821  },
+    { city: 'Berlin',      country: 'DE', lat: 52.5200, lng: 13.4050 },
+    { city: 'Munich',      country: 'DE', lat: 48.1351, lng: 11.5820 },
+    { city: 'Hamburg',     country: 'DE', lat: 53.5753, lng: 10.0153 },
+    { city: 'Frankfurt',   country: 'DE', lat: 50.1109, lng:  8.6821 },
+    { city: 'Cologne',     country: 'DE', lat: 50.9333, lng:  6.9500 },
+    { city: 'Düsseldorf',  country: 'DE', lat: 51.2217, lng:  6.7762 },
+    { city: 'Stuttgart',   country: 'DE', lat: 48.7758, lng:  9.1829 },
+    { city: 'Nuremberg',   country: 'DE', lat: 49.4521, lng: 11.0767 },
+    { city: 'Dresden',     country: 'DE', lat: 51.0504, lng: 13.7373 },
+    { city: 'Leipzig',     country: 'DE', lat: 51.3397, lng: 12.3731 },
+    { city: 'Hannover',    country: 'DE', lat: 52.3759, lng:  9.7320 },
+    { city: 'Dortmund',    country: 'DE', lat: 51.5136, lng:  7.4653 },
   ];
   const [liveRaw, setLiveRaw] = useState<{ item: any; city: string; country: string }[]>([]);
   const [, setLiveTick] = useState(0);
@@ -2613,8 +2621,9 @@ function MarketplaceWorkspace() {
 
   const filteredNetworks = networks.filter(network => {
     const term = search.trim().toLowerCase();
-    // Search covers networks, cities, protocols, EVSE IDs, country
-    const apMatch = MARKETPLACE_ACCESS_POINTS.some(ap =>
+    // Search covers networks, cities, protocols, EVSE IDs, country — include live TomTom stations
+    const allAPs = [...MARKETPLACE_ACCESS_POINTS, ...liveAccessPoints];
+    const apMatch = allAPs.some(ap =>
       ap.network === network.name && (ap.id.toLowerCase().includes(term) || ap.city.toLowerCase().includes(term))
     );
     const matchesSearch = term === '' || apMatch || [network.name, network.country, network.city, network.protocol, network.role]
@@ -2644,7 +2653,11 @@ function MarketplaceWorkspace() {
   const avgAvail      = Math.round(networks.reduce((s, n) => s + n.availability, 0) / (networks.length || 1));
   const lastSyncActive = syncElapsed || networks.filter(n => n.status === 'Active').map(n => n.lastSync)[0] || '--';
 
-  const selectedNetworkAccessPoints = MARKETPLACE_ACCESS_POINTS.filter(pt => pt.network === selectedNetwork.name);
+  // Prefer live TomTom stations for this network; fall back to static when TomTom hasn't resolved that operator yet
+  const liveForSelected = liveAccessPoints.filter(pt => pt.network === selectedNetwork.name);
+  const selectedNetworkAccessPoints = liveForSelected.length > 0
+    ? liveForSelected
+    : MARKETPLACE_ACCESS_POINTS.filter(pt => pt.network === selectedNetwork.name);
 
   const selectNetwork = (n: MarketplaceNetwork) => {
     hasUserSelectedNetwork.current = true;
@@ -2679,7 +2692,7 @@ function MarketplaceWorkspace() {
       )}
       <SectionHeader
         title="Market Place"
-        sub="Network discovery, health monitoring, and roaming agreement management across West Africa"
+        sub="Network discovery, health monitoring, and roaming agreement management across Germany"
         action={
           <div className="flex gap-2">
             <button data-local="" onClick={handleSync} disabled={syncing}
@@ -2868,7 +2881,7 @@ function MarketplaceWorkspace() {
                 </div>
               ) : filteredNetworks.map(n => {
                 const isSelected = selectedNetwork.name === n.name;
-                const aps = MARKETPLACE_ACCESS_POINTS.filter(ap => ap.network === n.name);
+                const aps = [...liveAccessPoints, ...MARKETPLACE_ACCESS_POINTS].filter(ap => ap.network === n.name);
                 return (
                   <button key={n.name} data-local=""
                     onClick={() => selectNetwork(n)}
@@ -2984,7 +2997,12 @@ function MarketplaceWorkspace() {
           {/* Access Points */}
           <div className="px-4 py-2">
             <div className="flex items-center justify-between mb-2">
-              <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wide">Access Points</h4>
+              <div className="flex items-center gap-1.5">
+                <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wide">Access Points</h4>
+                {liveForSelected.length > 0 && (
+                  <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full">● Live</span>
+                )}
+              </div>
               <span className="text-[10px] text-slate-400">{selectedNetworkAccessPoints.length} stations</span>
             </div>
             <div className="space-y-1.5">
@@ -5476,6 +5494,60 @@ function mapTomTomToRFStation(
   };
 }
 
+/**
+ * Maps TomTom brand/operator names to RF Connector's canonical network names.
+ * TomTom POIs often carry a `poi.brands[0].name` like "IONITY" or "EnBW".
+ * When a match is found the live station is attributed to that network, so it
+ * appears in the correct network card and detail panel.
+ */
+const TOMTOM_OPERATOR_MAP: Record<string, string> = {
+  'IONITY':             'IONITY GmbH',
+  'EnBW':               'EnBW mobility+',
+  'EnBW mobility+':     'EnBW mobility+',
+  'Allego':             'Allego Deutschland',
+  'Shell':              'Shell Recharge Germany',
+  'Shell Recharge':     'Shell Recharge Germany',
+  'Fastned':            'Fastned Deutschland',
+  'ARAL':               'ARAL pulse',
+  'Aral':               'ARAL pulse',
+  'bp pulse':           'ARAL pulse',
+  'RWE':                'RWE eMobility',
+  'Mer':                'Mer Germany',
+  'EWE Go':             'EWE Go',
+  'EWE':                'EWE Go',
+  'SWM':                'Stadtwerke München',
+  'Stadtwerke München': 'Stadtwerke München',
+  'Volkswagen':         'Elli (Volkswagen)',
+  'Elli':               'Elli (Volkswagen)',
+  'We Charge':          'Elli (Volkswagen)',
+  'E.ON':               'E.ON Drive',
+  'E.ON Drive':         'E.ON Drive',
+  'Ubitricity':         'Ubitricity',
+  'enercity':           'enercity eMobility',
+  'N-ERGIE':            'N-ERGIE Netz',
+  'Vattenfall':         'Vattenfall eMobility',
+  'Mainova':            'Mainova eMobility',
+  'Total':              'Total Energies Recharge',
+  'TotalEnergies':      'Total Energies Recharge',
+  'ChargePoint':        'ChargePoint Germany',
+  'Westfalen':          'Westfalen AG eMobility',
+  'Rheinenergie':       'Rheinenergie eMobility',
+  'Lichtblick':         'Lichtblick eMobility',
+  'BMW':                'BMW ChargeNow',
+  'ChargeNow':          'BMW ChargeNow',
+  'GETEC':              'GETEC eMobility',
+  'Siemens':            'Siemens eMobility',
+};
+
+function resolveOperatorName(raw: string): string {
+  if (!raw || raw === 'Unknown Operator') return 'TomTom Live';
+  const direct = TOMTOM_OPERATOR_MAP[raw];
+  if (direct) return direct;
+  // Partial match — find first key that appears as substring
+  const key = Object.keys(TOMTOM_OPERATOR_MAP).find(k => raw.toLowerCase().includes(k.toLowerCase()));
+  return key ? TOMTOM_OPERATOR_MAP[key] : raw;
+}
+
 /** RFConnectorStation → MarketplaceAccessPoint (maps common model to UI model) */
 function rfStationToAccessPoint(s: RFConnectorStation, index: number): MarketplaceAccessPoint {
   const maxPower = Math.max(...s.connectors.map(c => c.powerKW), 0);
@@ -5486,7 +5558,7 @@ function rfStationToAccessPoint(s: RFConnectorStation, index: number): Marketpla
   return {
     id:           `LIVE-${String(s.stationId).slice(-10)}-${index}`,
     name:         s.stationName,
-    network:      'TomTom Live',
+    network:      resolveOperatorName(s.operatorName),
     city:         s.address.split(',')[1]?.trim() ?? s.address.split(',')[0]?.trim() ?? 'Unknown',
     country:      s.provider === 'TomTom' ? 'DE' : 'Unknown',
     status:       s.availability === 'Charging' ? 'Charging'
