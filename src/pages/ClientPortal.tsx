@@ -2493,7 +2493,10 @@ function MarketplaceWorkspace() {
     { city: 'Dortmund',    country: 'DE', lat: 51.5136, lng:  7.4653 },
   ];
   const [liveRaw, setLiveRaw] = useState<{ item: any; city: string; country: string }[]>([]);
-  const [, setLiveTick] = useState(0);
+
+  // Real availability counts keyed by TomTom station ID
+  type AvailCounts = { available: number; occupied: number; reserved: number; outOfService: number };
+  const [availabilityMap, setAvailabilityMap] = useState<Map<string, AvailCounts>>(new Map());
 
   const fetchLiveStations = useCallback(async () => {
     try {
@@ -2510,19 +2513,87 @@ function MarketplaceWorkspace() {
     } catch (e) { console.error('TomTom live layer:', e); }
   }, []);
 
+  // Fetch real EVSE availability from TomTom chargingAvailability endpoint.
+  // Capped at 60 unique IDs per call to stay within rate limits.
+  const fetchAvailability = useCallback(async (ids: string[]) => {
+    const unique = [...new Set(ids.filter(Boolean))].slice(0, 60);
+    if (!unique.length) return;
+    const settled = await Promise.allSettled(unique.map(async id => {
+      try {
+        const url = `https://api.tomtom.com/search/2/chargingAvailability.json?key=${TOMTOM_KEY}&chargingAvailability=${encodeURIComponent(id)}`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        // Sum counts across all connector types for this station
+        const totals = (data.connectors ?? []).reduce(
+          (acc: AvailCounts, c: any) => ({
+            available:    acc.available    + (c.availableCount    ?? 0),
+            occupied:     acc.occupied     + (c.occupiedCount     ?? 0),
+            reserved:     acc.reserved     + (c.reservedCount     ?? 0),
+            outOfService: acc.outOfService + (c.outOfServiceCount ?? 0),
+          }),
+          { available: 0, occupied: 0, reserved: 0, outOfService: 0 }
+        );
+        return { id, totals };
+      } catch { return null; }
+    }));
+    setAvailabilityMap(prev => {
+      const next = new Map(prev);
+      settled.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) next.set(r.value.id, r.value.totals);
+      });
+      return next;
+    });
+  }, []);
+
+  // Initial station fetch on mount
   useEffect(() => {
     fetchLiveStations();
-    // OCPI statuses re-simulate each 30s bucket — tick re-renders without refetching TomTom
-    const t = setInterval(() => setLiveTick(x => x + 1), 30000);
+    // Refresh full station list every 5 minutes (static info rarely changes)
+    const t = setInterval(fetchLiveStations, 300_000);
     return () => clearInterval(t);
   }, [fetchLiveStations]);
 
+  // Whenever liveRaw populates or refreshes, fetch real availability.
+  // Repeat every 30 seconds using the current station ID list.
+  useEffect(() => {
+    if (!liveRaw.length) return;
+    const ids = liveRaw.map(({ item }) => item.id).filter(Boolean) as string[];
+    fetchAvailability(ids);
+    const t = setInterval(() => fetchAvailability(ids), 30_000);
+    return () => clearInterval(t);
+  }, [liveRaw, fetchAvailability]);
+
   // TomTom → RFConnectorStation (common model) → MarketplaceAccessPoint (UI model)
+  // Uses real availability from TomTom chargingAvailability API; falls back to
+  // deterministic simulation when availability hasn't been fetched yet.
   const liveAccessPoints: MarketplaceAccessPoint[] = liveRaw.map(({ item, city, country }, i) => {
-    const rawId = item.id ?? `${city}-${i}`;
-    const total = (String(rawId).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % 5) + 2;
-    const simulatedConns = simulateOCPI(rawId, total);
-    const rfStation = mapTomTomToRFStation(item, city, country, i, simulatedConns);
+    const rawId: string = item.id ?? `${city}-${i}`;
+    const realAvail = availabilityMap.get(rawId);
+
+    let conns: ConnectorDetail[];
+    if (realAvail) {
+      // Distribute real counts into per-connector status entries
+      const total = Math.max(realAvail.available + realAvail.occupied + realAvail.reserved + realAvail.outOfService, 1);
+      const statuses: ConnectorDetail['status'][] = [
+        ...Array(realAvail.available).fill('Available'),
+        ...Array(realAvail.occupied).fill('Occupied'),
+        ...Array(realAvail.reserved).fill('Reserved'),
+        ...Array(realAvail.outOfService).fill('Offline'),
+      ];
+      conns = Array.from({ length: total }, (_, ci) => ({
+        id:            `${rawId}-C${ci + 1}`,
+        type:          'CCS2',
+        powerKW:       150,
+        status:        (statuses[ci] ?? 'Offline') as ConnectorDetail['status'],
+        waitingDrivers: statuses[ci] === 'Occupied' ? 1 : 0,
+      }));
+    } else {
+      const total = (String(rawId).split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % 5) + 2;
+      conns = simulateOCPI(rawId, total);
+    }
+
+    const rfStation = mapTomTomToRFStation(item, city, country, i, conns as any);
     return rfStationToAccessPoint(rfStation, i);
   });
 
