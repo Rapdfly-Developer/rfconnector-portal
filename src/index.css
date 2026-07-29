@@ -1,0 +1,187 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { scroll-behavior: smooth; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+}
+
+@layer utilities {
+  .gradient-text {
+    @apply bg-gradient-to-r from-brand-400 via-cyan-400 to-charge-400 bg-clip-text text-transparent;
+  }
+  .gradient-border {
+    background: linear-gradient(#ffffff, #ffffff) padding-box,
+                linear-gradient(135deg, #6366f1, #06b6d4, #10b981) border-box;
+    border: 1px solid transparent;
+  }
+  html.dark .gradient-border {
+    background: linear-gradient(#1e293b, #1e293b) padding-box,
+                linear-gradient(135deg, #6366f1, #06b6d4, #10b981) border-box !important;
+  }
+  .glow-brand {
+    box-shadow: 0 0 40px -10px rgba(99, 102, 241, 0.5);
+  }
+  .glow-charge {
+    box-shadow: 0 0 30px -8px rgba(16, 185, 129, 0.4);
+  }
+  .noise-bg {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+}
+
+/* ── Global dark mode ───────────────────────────────────────────────────────── */
+html.dark { color-scheme: dark; }
+html.dark body { background-color: #111827; color: #e2e8f0; }
+
+/* Surfaces — layered: sidebar(#0d1117) → page bg(#111827) → cards(#1e293b) */
+html.dark .bg-white          { background-color: #1e293b !important; }
+html.dark .bg-slate-50       { background-color: #111827 !important; }
+html.dark .bg-slate-100      { background-color: #1e293b !important; }
+html.dark .bg-slate-200      { background-color: #334155 !important; }
+html.dark .bg-emerald-50     { background-color: rgba(16,185,129,0.1) !important; }
+html.dark .bg-blue-50        { background-color: rgba(59,130,246,0.1) !important; }
+html.dark .bg-violet-50      { background-color: rgba(139,92,246,0.1) !important; }
+html.dark .bg-amber-50       { background-color: rgba(245,158,11,0.1) !important; }
+html.dark .bg-red-50         { background-color: rgba(239,68,68,0.1) !important; }
+html.dark .bg-purple-50      { background-color: rgba(168,85,247,0.1) !important; }
+html.dark .bg-indigo-50      { background-color: rgba(99,102,241,0.1) !important; }
+
+/* Borders */
+html.dark .border-slate-200  { border-color: #1e293b !important; }
+html.dark .border-slate-100  { border-color: #1e293b !important; }
+html.dark .border-slate-300  { border-color: #334155 !important; }
+html.dark .border-emerald-200{ border-color: rgba(16,185,129,0.3) !important; }
+html.dark .border-violet-200 { border-color: rgba(139,92,246,0.3) !important; }
+
+/* Text */
+html.dark .text-slate-900    { color: #f8fafc !important; }
+html.dark .text-slate-800    { color: #f1f5f9 !important; }
+html.dark .text-slate-700    { color: #e2e8f0 !important; }
+html.dark .text-slate-600    { color: #cbd5e1 !important; }
+html.dark .text-slate-500    { color: #94a3b8 !important; }
+html.dark .text-slate-400    { color: #64748b !important; }
+
+/* Dividers */
+html.dark .divide-slate-100 > * + * { border-color: #1e293b !important; }
+html.dark .divide-slate-200 > * + * { border-color: #1e293b !important; }
+
+/* Hover states */
+html.dark .hover\:bg-slate-50:hover  { background-color: #1e293b !important; }
+html.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
+
+/* Top bar & header */
+html.dark header.sticky { background-color: #0d1117 !important; border-color: #1e293b !important; }
+
+/* Table specifics */
+html.dark thead tr { background-color: #0a0f1e !important; }
+html.dark table   { background-color: transparent !important; }
+
+/* Input / select */
+html.dark input, html.dark select, html.dark textarea {
+  background-color: #1e293b !important;
+  border-color: #334155 !important;
+  color: #e2e8f0 !important;
+}
+html.dark input::placeholder { color: #475569 !important; }
+
+/* ── Portal sidebar dark mode ────────────────────────────────────────────────── */
+html.dark .portal-sidebar {
+  background-color: #0d1117 !important;
+  border-right: 1px solid #1e293b;
+}
+html.dark .portal-sidebar .border-slate-800 { border-color: #1e293b !important; }
+html.dark .portal-sidebar .text-slate-300   { color: #94a3b8 !important; }
+html.dark .portal-sidebar .text-slate-400   { color: #64748b !important; }
+html.dark .portal-sidebar .text-slate-500   { color: #475569 !important; }
+html.dark .portal-sidebar .text-white       { color: #f1f5f9 !important; }
+html.dark .portal-sidebar .hover\:bg-slate-800:hover { background-color: #1e293b !important; }
+html.dark .portal-sidebar .hover\:text-slate-200:hover { color: #e2e8f0 !important; }
+
+/* Scrollbar in dark mode */
+html.dark ::-webkit-scrollbar-track { background: #020617; }
+html.dark ::-webkit-scrollbar-thumb { background: #334155; }
+
+/* ── Portal light mode enhancements ─────────────────────────────────────────── */
+
+/* Page background — very subtle blue-tinted surface */
+html:not(.dark) .min-h-screen.bg-gray-50.flex {
+  background: linear-gradient(135deg, #f0f4ff 0%, #f8fafc 50%, #f0f9ff 100%) !important;
+}
+
+/* Sidebar — indigo-tinted gradient with depth */
+html:not(.dark) .portal-sidebar {
+  background: linear-gradient(180deg, #fafbff 0%, #f4f6fe 60%, #eef2fd 100%) !important;
+  border-right: 1px solid #dde3f0 !important;
+  box-shadow: 2px 0 12px rgba(99, 102, 241, 0.06);
+}
+
+/* Sidebar logo strip — matches sidebar body */
+html:not(.dark) .portal-sidebar > div:first-child {
+  background: transparent;
+  border-bottom: 1px solid #dde3f0 !important;
+}
+html:not(.dark) .portal-sidebar > div:first-child .font-bold { color: #1e1b4b !important; }
+html:not(.dark) .portal-sidebar > div:first-child .text-\[10px\] { color: #6366f1 !important; opacity: 0.7; }
+
+/* Sidebar tenant info strip */
+html:not(.dark) .portal-sidebar > div:nth-child(2) {
+  background: rgba(99,102,241,0.04);
+  border-bottom: 1px solid #dde3f0 !important;
+}
+html:not(.dark) .portal-sidebar > div:nth-child(2) .text-gray-900 { color: #1e1b4b !important; }
+html:not(.dark) .portal-sidebar > div:nth-child(2) .text-gray-400 { color: #6366f1 !important; opacity: 0.7; }
+
+/* Nav group labels — indigo accent */
+html:not(.dark) .portal-sidebar nav button.text-gray-400 {
+  color: #a5b4fc !important;
+  letter-spacing: 0.1em;
+}
+html:not(.dark) .portal-sidebar nav button.text-gray-400:hover {
+  color: #6366f1 !important;
+}
+
+/* Nav items — subtle hover, indigo active */
+html:not(.dark) .portal-sidebar nav button.text-gray-600 {
+  color: #4b5563 !important;
+}
+html:not(.dark) .portal-sidebar nav button.text-gray-600:hover {
+  background: rgba(99,102,241,0.08) !important;
+  color: #4338ca !important;
+}
+html:not(.dark) .portal-sidebar nav button.bg-indigo-600 {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%) !important;
+  box-shadow: 0 2px 8px rgba(99,102,241,0.35) !important;
+}
+
+/* Sidebar footer strip */
+html:not(.dark) .portal-sidebar > div:last-child {
+  background: rgba(99,102,241,0.03);
+  border-top: 1px solid #dde3f0 !important;
+}
+
+/* Main content area header */
+html:not(.dark) header.sticky {
+  background: rgba(255,255,255,0.92) !important;
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #e8edf7 !important;
+  box-shadow: 0 1px 8px rgba(99,102,241,0.07);
+}
+
+/* Cards — lift with shadow */
+html:not(.dark) .rounded-2xl.border.border-gray-200,
+html:not(.dark) .rounded-2xl.border.border-slate-200,
+html:not(.dark) .rounded-xl.border.border-gray-200,
+html:not(.dark) .rounded-xl.border.border-slate-200 {
+  box-shadow: 0 1px 6px rgba(99,102,241,0.06), 0 4px 16px rgba(0,0,0,0.04) !important;
+  border-color: #e8edf7 !important;
+}
+html:not(.dark) .rounded-2xl.bg-white,
+html:not(.dark) .rounded-xl.bg-white {
+  box-shadow: 0 1px 6px rgba(99,102,241,0.06), 0 4px 16px rgba(0,0,0,0.04) !important;
+}

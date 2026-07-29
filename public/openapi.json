@@ -1,0 +1,3378 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ChargeBridge Gateway API",
+    "version": "1.0.0",
+    "description": "## Overview\nChargeBridge is a universal EV charging connectivity platform by **Rapdfly Private Limited**.\nThis specification covers all endpoints available to client integrators (e.g. **Drivejini**,\nfleet management platforms, and eMSP back-offices).\n\n## Authentication\nAll `/v1/*` operator endpoints require a **Bearer JWT** in the `Authorization` header.\nOCPI push endpoints (`/ocpi/emsp/2.2/*`) use **OCPI Token C** authentication.\n\n## OCPI 2.2.1 Compliance\nEndpoints are annotated with their corresponding OCPI 2.2.1 module:\n- **Locations Module** — `/v1/evse/*` and `/ocpi/emsp/2.2/locations/*`\n- **Sessions Module** — `/v1/sessions/*` and `/ocpi/emsp/2.2/sessions`\n- **CDRs Module** — `/ocpi/emsp/2.2/cdrs`\n- **Tariffs Module** — `/v1/tariffs/*`\n- **Commands Module** — `/ocpi/emsp/2.2/commands`\n\n## Webhook Signatures\nEvery webhook delivery is signed with `HMAC-SHA256`.  Verify the `X-Gateway-Signature` header\nagainst `HMAC-SHA256(signingSecret, rawBody)` before processing any payload.",
+    "contact": {
+      "name": "ChargeBridge Platform Engineering",
+      "email": "platform@rapdfly.com",
+      "url": "https://chargebridge.rapdfly.com"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://chargebridge.rapdfly.com/terms"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.chargebridge.rapdfly.com",
+      "description": "Production"
+    },
+    {
+      "url": "https://sandbox.chargebridge.rapdfly.com",
+      "description": "Sandbox (safe for integration testing)"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Platform",
+      "description": "Health checks and readiness probes."
+    },
+    {
+      "name": "Stations",
+      "description": "Charging station discovery and geosearch."
+    },
+    {
+      "name": "EVSE Repository",
+      "description": "Location and EVSE lifecycle management (OCPI 2.2.1 Locations Module)."
+    },
+    {
+      "name": "Sessions",
+      "description": "Remote start/stop and session tracking (OCPI 2.2.1 Sessions Module)."
+    },
+    {
+      "name": "Tariffs",
+      "description": "Pricing structures and fare estimation (OCPI 2.2.1 Tariffs Module)."
+    },
+    {
+      "name": "Drivers",
+      "description": "Driver registration and GDPR-compliant erasure."
+    },
+    {
+      "name": "Webhooks",
+      "description": "Webhook endpoint management and event subscriptions."
+    },
+    {
+      "name": "Roaming",
+      "description": "Roaming partner networks and bilateral agreements."
+    },
+    {
+      "name": "OCPI 2.2 — CPO Push",
+      "description": "Inbound OCPI 2.2.1 push endpoints — CPO → ChargeBridge eMSP."
+    },
+    {
+      "name": "Client Portal",
+      "description": "Client-facing portal authentication and dashboard APIs."
+    },
+    {
+      "name": "Webhook Events",
+      "description": "Asynchronous event payload shapes delivered to registered webhook URLs."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Platform"
+        ],
+        "summary": "Health probe",
+        "description": "Returns `200 OK` when the API server and database are reachable.  Use for load-balancer health checks.  No authentication required.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Service healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    },
+                    "uptime_s": {
+                      "type": "number"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readiness": {
+      "get": {
+        "tags": [
+          "Platform"
+        ],
+        "summary": "Readiness probe",
+        "description": "Returns `200` once the database pool, Redis, and OCPP WebSocket server are initialised.  Used by Kubernetes `readinessProbe`.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Ready"
+          },
+          "503": {
+            "description": "Not yet ready"
+          }
+        }
+      }
+    },
+    "/v1/stations": {
+      "get": {
+        "tags": [
+          "Stations"
+        ],
+        "summary": "List nearby charging stations",
+        "description": "Returns paginated stations within `radius_km` of the given geographic point, with live port availability counts.  Results are sorted by distance ascending.",
+        "operationId": "listNearbyStations",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "minimum": -90,
+              "maximum": 90
+            },
+            "description": "Centre-point latitude (WGS-84, decimal degrees)."
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "minimum": -180,
+              "maximum": 180
+            },
+            "description": "Centre-point longitude (WGS-84, decimal degrees)."
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 10,
+              "maximum": 100
+            },
+            "description": "Search radius in kilometres.  Capped at 100 km."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque cursor for keyset pagination.  Pass the `meta.cursor` from the previous response."
+          },
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/XClientId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated station list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/StationSummary"
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "cursor": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "has_more": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/stations/{id}": {
+      "get": {
+        "tags": [
+          "Stations"
+        ],
+        "summary": "Get station by ID",
+        "description": "Returns full station record including EVSE list and connector details.",
+        "operationId": "getStation",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Station record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/StationSummary"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/v1/evse/locations": {
+      "get": {
+        "tags": [
+          "EVSE Repository"
+        ],
+        "summary": "Search EVSE locations",
+        "description": "Full-text and filter search across the EVSE repository.  Supports filtering by OCPI status, country, city, and network.  **OCPI 2.2.1 Locations Module** — static + dynamic data.",
+        "operationId": "searchLocations",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/EVSEStatus"
+            },
+            "description": "Filter by EVSE operational status."
+          },
+          {
+            "name": "country_code",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2
+            },
+            "description": "ISO 3166-1 alpha-2 country filter."
+          },
+          {
+            "name": "network_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Filter by roaming network."
+          },
+          {
+            "name": "city",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/PageOffset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Location results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Location"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "EVSE Repository"
+        ],
+        "summary": "Create or update a location",
+        "description": "Upserts a charging location.  If a record with the same `location_id` already exists for the tenant, it is updated.  **OCPI 2.2.1 Locations Module** — CPO pushes location data.",
+        "operationId": "upsertLocation",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Location"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Location created/updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Location"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/evse/locations/{id}/evses": {
+      "post": {
+        "tags": [
+          "EVSE Repository"
+        ],
+        "summary": "Add or update an EVSE on a location",
+        "description": "Upserts an individual EVSE under a location.  Connector definitions follow **OCPI 2.2.1 `ConnectorType`** standards including GB/T (China), CCS2 (`IEC_62196_T2_COMBO`), CHAdeMO, and ChaoJi.",
+        "operationId": "upsertEVSE",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EVSE"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "EVSE created/updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EVSE"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/evse/evses/{uid}/status": {
+      "patch": {
+        "tags": [
+          "EVSE Repository"
+        ],
+        "summary": "Update EVSE operational status",
+        "description": "Pushes a real-time status change for an EVSE.  Triggers a `station.status.changed` webhook event to all subscribed endpoints.  **OCPI 2.2.1 dynamic Locations data.**",
+        "operationId": "updateEVSEStatus",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "EVSE UID as registered."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "$ref": "#/components/schemas/EVSEStatus"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/sessions/start": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Start a charging session",
+        "description": "Initiates a new charging session via OCPP `RemoteStartTransaction`.  The `Idempotency-Key` header is **required** — re-submitting the same key within 24 hours returns the original response without starting a second session.  **OCPI 2.2.1 Sessions Module.**",
+        "operationId": "startSession",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Session started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Session"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Port already in use or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/stop": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Stop an active charging session",
+        "description": "Sends an OCPP `RemoteStopTransaction` command.  The session transitions to `COMPLETED` and a CDR is finalised.",
+        "operationId": "stopSession",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Session"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get session by ID",
+        "operationId": "getSession",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Session"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/v1/tariffs": {
+      "get": {
+        "tags": [
+          "Tariffs"
+        ],
+        "summary": "List tariffs",
+        "description": "Returns all tariffs visible to the authenticated tenant.  **OCPI 2.2.1 Tariffs Module.**",
+        "operationId": "listTariffs",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "archived"
+              ]
+            }
+          },
+          {
+            "name": "network_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/PageOffset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tariff list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Tariff"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tariffs"
+        ],
+        "summary": "Create a tariff",
+        "description": "Creates a new tariff pricing structure.  Supports per-kWh, per-minute time rates, flat session fees, and idle parking charges per OCPI 2.2.1 `TariffElement`.",
+        "operationId": "createTariff",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TariffCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Tariff created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Tariff"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/tariffs/calculate": {
+      "post": {
+        "tags": [
+          "Tariffs"
+        ],
+        "summary": "Preview session cost",
+        "description": "Calculates the cost of a hypothetical session without creating one — useful for fare estimation in a driver-facing app.",
+        "operationId": "calculateCost",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "energy_kwh",
+                  "duration_min",
+                  "tariff_id"
+                ],
+                "properties": {
+                  "energy_kwh": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "duration_min": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "tariff_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cost estimate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "cost": {
+                          "type": "number",
+                          "example": 12.5
+                        },
+                        "currency": {
+                          "type": "string",
+                          "example": "GHS"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/tariffs/{id}": {
+      "get": {
+        "tags": [
+          "Tariffs"
+        ],
+        "summary": "Get tariff by ID",
+        "operationId": "getTariff",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tariff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Tariff"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tariffs"
+        ],
+        "summary": "Archive a tariff",
+        "description": "Archives (soft-deletes) a tariff.  Active sessions referencing this tariff are not affected.",
+        "operationId": "archiveTariff",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tariff archived"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/v1/drivers": {
+      "post": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Register a driver",
+        "description": "Creates a driver record with fully encrypted PII (name, email, phone) stored using AES-256-GCM.  Records consent for all required processing purposes automatically.  Returns only non-sensitive metadata.",
+        "operationId": "createDriver",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Driver registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DriverResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "GDPR consent required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/drivers/{id}": {
+      "get": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "Get driver metadata",
+        "description": "Returns driver metadata.  PII fields are never returned via the API.",
+        "operationId": "getDriver",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Driver record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/DriverResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Drivers"
+        ],
+        "summary": "GDPR erasure — right to be forgotten",
+        "description": "Executes **GDPR Article 17 right-to-erasure**.  All PII fields (name, email, phone, RFID) are cryptographically shredded.  Billing and audit records are retained, linked only via a pseudonymous token.",
+        "operationId": "eraseDriver",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Erasure complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/GDPRErasureResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/v1/webhooks": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Register a webhook endpoint",
+        "description": "Registers an HTTPS URL to receive real-time event notifications.  Returns a one-time `signing_secret` — store it securely.  Each delivery includes an `X-Gateway-Signature` header containing an HMAC-SHA256 hex digest of the raw request body, keyed with your `signing_secret`.  Verify this before processing any payload.",
+        "operationId": "registerWebhook",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Webhook registered — signing secret shown once only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/WebhookCreatedResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "List active webhooks",
+        "operationId": "listWebhooks",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook list (signing secrets omitted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookRecord"
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{id}": {
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Delete a webhook",
+        "operationId": "deleteWebhook",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Webhook deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/v1/roaming/networks": {
+      "get": {
+        "tags": [
+          "Roaming"
+        ],
+        "summary": "List roaming networks",
+        "description": "Returns partner networks visible to the tenant — CPOs, eMSPs, and HUBs with OCPI or eMIP connectivity.",
+        "operationId": "listNetworks",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CPO",
+                "EMSP",
+                "HUB"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/PageOffset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Network list"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Roaming"
+        ],
+        "summary": "Register a roaming network",
+        "description": "Adds a new roaming partner to the marketplace.  `country_code` and `party_id` map directly to OCPI 2.2.1 credentials.",
+        "operationId": "registerNetwork",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetworkRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Network registered"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/roaming/agreements": {
+      "get": {
+        "tags": [
+          "Roaming"
+        ],
+        "summary": "List roaming agreements",
+        "operationId": "listAgreements",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agreement list"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Roaming"
+        ],
+        "summary": "Create a roaming agreement",
+        "operationId": "createAgreement",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoamingAgreementRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Agreement created"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/v1/roaming/agreements/{id}/sign": {
+      "post": {
+        "tags": [
+          "Roaming"
+        ],
+        "summary": "Countersign a roaming agreement",
+        "description": "Records the digital countersignature and transitions the agreement status to `signed`.",
+        "operationId": "signAgreement",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignAgreementRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agreement signed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/ocpi/emsp/2.2/cdrs": {
+      "post": {
+        "tags": [
+          "OCPI 2.2 — CPO Push"
+        ],
+        "summary": "Receive CDR from CPO",
+        "description": "CPO pushes a completed **Charge Detail Record** (CDR) to ChargeBridge.  Triggers internal billing reconciliation and fires an `ocpi.cdr_received` webhook event.  **OCPI 2.2.1 CDRs Module.**\n\nAuthentication: OCPI Token C in `Authorization: Token <base64>` header.",
+        "operationId": "receiveCDR",
+        "security": [
+          {
+            "OCPITokenC": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OCPICDRPush"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "CDR accepted",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "description": "URI of the stored CDR resource."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status_code": {
+                      "type": "integer",
+                      "example": 1000
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
+    "/ocpi/emsp/2.2/sessions": {
+      "put": {
+        "tags": [
+          "OCPI 2.2 — CPO Push"
+        ],
+        "summary": "Receive session update from CPO",
+        "description": "CPO pushes real-time session updates during a charging session.  **OCPI 2.2.1 Sessions Module.**",
+        "operationId": "receiveSessionUpdate",
+        "security": [
+          {
+            "OCPITokenC": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Session"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session update acknowledged"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/ocpi/emsp/2.2/locations/{country_code}/{party_id}/{location_id}": {
+      "put": {
+        "tags": [
+          "OCPI 2.2 — CPO Push"
+        ],
+        "summary": "Receive location update from CPO",
+        "description": "CPO pushes static or dynamic location/EVSE data.  **OCPI 2.2.1 Locations Module.**",
+        "operationId": "receiveLocationUpdate",
+        "security": [
+          {
+            "OCPITokenC": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "country_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2
+            }
+          },
+          {
+            "name": "party_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 3
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Location"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Location accepted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/ocpi/emsp/2.2/commands": {
+      "post": {
+        "tags": [
+          "OCPI 2.2 — CPO Push"
+        ],
+        "summary": "Receive OCPI command result",
+        "description": "CPO returns the result of a `START_SESSION` or `STOP_SESSION` command previously sent by ChargeBridge.",
+        "operationId": "receiveCommandResult",
+        "security": [
+          {
+            "OCPITokenC": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "type": "string",
+                    "enum": [
+                      "ACCEPTED",
+                      "CANCELED_RESERVATION",
+                      "EVSE_OCCUPIED",
+                      "EVSE_INOPERATIVE",
+                      "FAILED",
+                      "NOT_SUPPORTED",
+                      "REJECTED",
+                      "TIMEOUT",
+                      "UNKNOWN_RESERVATION"
+                    ]
+                  },
+                  "timeout": {
+                    "type": "integer"
+                  },
+                  "message": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Result acknowledged"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/client/auth/login": {
+      "post": {
+        "tags": [
+          "Client Portal"
+        ],
+        "summary": "Client portal login",
+        "description": "Authenticates a client portal user and issues a short-lived JWT.  Rate-limited to 10 requests per minute per IP.",
+        "operationId": "clientLogin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "password": {
+                    "type": "string",
+                    "format": "password",
+                    "minLength": 8
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "description": "Bearer JWT — expires in 8 hours."
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials"
+          },
+          "429": {
+            "description": "Too many login attempts"
+          }
+        }
+      }
+    },
+    "/v1/client/auth/logout": {
+      "post": {
+        "tags": [
+          "Client Portal"
+        ],
+        "summary": "Client portal logout",
+        "operationId": "clientLogout",
+        "security": [
+          {
+            "ClientPortalJWT": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Logged out"
+          }
+        }
+      }
+    },
+    "/v1/client/portal/dashboard": {
+      "get": {
+        "tags": [
+          "Client Portal"
+        ],
+        "summary": "Fetch portal dashboard data",
+        "description": "Returns aggregated KPIs, recent sessions, CDR counts, and partner status for the client dashboard view.",
+        "operationId": "getClientDashboard",
+        "security": [
+          {
+            "ClientPortalJWT": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard payload"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "session.started": {
+      "post": {
+        "tags": [
+          "Webhook Events"
+        ],
+        "summary": "Session started",
+        "description": "Fired when a new charging session is successfully initiated via OCPP `RemoteStartTransaction`.\n\n**Signature verification:** Compute `HMAC-SHA256(signingSecret, rawBody)` and compare the hex digest to the `X-Gateway-Signature` header value.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "example": "session.started"
+                  },
+                  "event_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "timestamp": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "tenant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "session_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "charger_id": {
+                        "type": "string"
+                      },
+                      "port_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "driver_token": {
+                        "type": "string"
+                      },
+                      "currency": {
+                        "type": "string",
+                        "example": "GHS"
+                      },
+                      "wallet_reserved": {
+                        "type": "number"
+                      },
+                      "started_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Gateway-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "description": "HMAC-SHA256 hex digest of the raw request body, keyed with the webhook `signing_secret`."
+          },
+          {
+            "name": "X-Gateway-Event-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Unique delivery identifier.  Use for deduplication."
+          },
+          {
+            "name": "X-Gateway-Retry",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Retry attempt number (0 = first delivery)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          }
+        }
+      }
+    },
+    "session.ended": {
+      "post": {
+        "tags": [
+          "Webhook Events"
+        ],
+        "summary": "Session ended",
+        "description": "Fired when a session completes and the CDR is finalised.  **OCPI 2.2.1 Sessions Module.**",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "example": "session.ended"
+                  },
+                  "event_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "timestamp": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "session_id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "total_energy_kwh": {
+                        "type": "number"
+                      },
+                      "total_cost": {
+                        "type": "number"
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "stop_reason": {
+                        "type": "string",
+                        "enum": [
+                          "driver",
+                          "wallet_exhausted",
+                          "charger",
+                          "system",
+                          "emergency"
+                        ]
+                      },
+                      "ended_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Gateway-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Gateway-Event-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          }
+        }
+      }
+    },
+    "station.status.changed": {
+      "post": {
+        "tags": [
+          "Webhook Events"
+        ],
+        "summary": "EVSE status changed",
+        "description": "Fired whenever an EVSE transitions between operational states.  **OCPI 2.2.1 Locations Module — dynamic data.**",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "example": "station.status.changed"
+                  },
+                  "event_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "timestamp": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "evse_uid": {
+                        "type": "string"
+                      },
+                      "location_id": {
+                        "type": "string"
+                      },
+                      "previous_status": {
+                        "$ref": "#/components/schemas/EVSEStatus"
+                      },
+                      "current_status": {
+                        "$ref": "#/components/schemas/EVSEStatus"
+                      },
+                      "charger_id": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Gateway-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Gateway-Event-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          }
+        }
+      }
+    },
+    "charger.fault": {
+      "post": {
+        "tags": [
+          "Webhook Events"
+        ],
+        "summary": "Charger fault detected",
+        "description": "Fired when an OCPP `StatusNotification` reports a fault condition.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "example": "charger.fault"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "charger_id": {
+                        "type": "string"
+                      },
+                      "port_id": {
+                        "type": "string"
+                      },
+                      "error_code": {
+                        "type": "string",
+                        "example": "GroundFailure"
+                      },
+                      "info": {
+                        "type": "string",
+                        "nullable": true
+                      },
+                      "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Gateway-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Gateway-Event-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          }
+        }
+      }
+    },
+    "ocpi.cdr_received": {
+      "post": {
+        "tags": [
+          "Webhook Events"
+        ],
+        "summary": "OCPI CDR received from CPO",
+        "description": "Fired when a CPO successfully pushes a CDR to `/ocpi/emsp/2.2/cdrs`.  **OCPI 2.2.1 CDRs Module.**",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string",
+                    "example": "ocpi.cdr_received"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "cdr_id": {
+                        "type": "string"
+                      },
+                      "cpo_id": {
+                        "type": "string"
+                      },
+                      "total_energy": {
+                        "type": "number"
+                      },
+                      "total_cost": {
+                        "type": "number",
+                        "nullable": true
+                      },
+                      "currency": {
+                        "type": "string"
+                      },
+                      "received_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Gateway-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Gateway-Event-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT issued by `POST /v1/auth/token`. Include as `Authorization: Bearer <token>` on all `/v1/*` requests."
+      },
+      "OCPITokenC": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "OCPI Token C credential.  Format: `Token <base64-encoded-token>`.  Required on all `/ocpi/emsp/2.2/*` push endpoints."
+      },
+      "ClientPortalJWT": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived JWT issued by `POST /v1/client/auth/login`.  Required on all `/v1/client/portal/*` endpoints."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": "Client-generated unique key (UUID v4 recommended).  Re-submitting the same key with an identical body returns the cached response without side effects."
+      },
+      "XClientId": {
+        "name": "X-Client-Id",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "description": "Optional client application identifier for audit logging."
+      },
+      "PageLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "description": "Maximum number of records to return per page."
+      },
+      "PageOffset": {
+        "name": "offset",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "description": "Zero-based record offset for pagination."
+      },
+      "ResourceId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Unique resource identifier (UUID v4)."
+      }
+    },
+    "schemas": {
+      "ApiResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta",
+          "error"
+        ],
+        "properties": {
+          "data": {
+            "description": "Response payload.  Shape varies by endpoint."
+          },
+          "meta": {
+            "type": "object",
+            "description": "Pagination cursors, counts, or supplementary context.",
+            "additionalProperties": true
+          },
+          "error": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApiError"
+              }
+            ]
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "VALIDATION_ERROR"
+          },
+          "message": {
+            "type": "string",
+            "example": "port_id must be a valid UUID"
+          },
+          "details": {
+            "nullable": true,
+            "type": "object",
+            "additionalProperties": true
+          },
+          "requestId": {
+            "nullable": true,
+            "type": "string",
+            "example": "req_01HXYZ"
+          }
+        }
+      },
+      "StationSummary": {
+        "type": "object",
+        "description": "Aggregated station record — OCPI 2.2.1 Location + live port availability overlay.",
+        "required": [
+          "id",
+          "name",
+          "address",
+          "city",
+          "country_code"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Kaneshie Fast-Charge Hub"
+          },
+          "address": {
+            "type": "string",
+            "example": "12 Ring Road Central, Accra"
+          },
+          "city": {
+            "type": "string",
+            "example": "Accra"
+          },
+          "country_code": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2,
+            "example": "GH",
+            "description": "ISO 3166-1 alpha-2 country code."
+          },
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -90,
+            "maximum": 90,
+            "example": 5.5502,
+            "description": "WGS-84 latitude (ISO 6709 §4.1). Positive = North."
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180,
+            "example": -0.2174,
+            "description": "WGS-84 longitude (ISO 6709 §4.2). Positive = East."
+          },
+          "evse_count": {
+            "type": "integer",
+            "example": 8
+          },
+          "available_count": {
+            "type": "integer",
+            "example": 5
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Location": {
+        "type": "object",
+        "description": "OCPI 2.2.1 Location object for EVSE Repository management.",
+        "required": [
+          "location_id",
+          "name",
+          "address",
+          "city",
+          "country_code"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
+          },
+          "network_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "location_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "CPO-assigned location identifier (maps to OCPI `location.id`)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 300,
+            "example": "Tema Motorway EV Hub"
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "country_code": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2,
+            "example": "GH"
+          },
+          "lat": {
+            "type": "number",
+            "format": "double",
+            "minimum": -90,
+            "maximum": 90,
+            "nullable": true,
+            "example": 5.6716,
+            "description": "WGS-84 latitude. Positive = North (ISO 6709)."
+          },
+          "lng": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180,
+            "nullable": true,
+            "example": -0.0173,
+            "description": "WGS-84 longitude. Positive = East (ISO 6709)."
+          },
+          "operator": {
+            "type": "string",
+            "nullable": true
+          },
+          "time_zone": {
+            "type": "string",
+            "default": "UTC",
+            "example": "Africa/Accra"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          }
+        }
+      },
+      "EVSEStatus": {
+        "type": "string",
+        "enum": [
+          "AVAILABLE",
+          "BLOCKED",
+          "CHARGING",
+          "INOPERATIVE",
+          "OUTOFORDER",
+          "PLANNED",
+          "REMOVED",
+          "RESERVED",
+          "UNKNOWN"
+        ],
+        "description": "OCPI 2.2.1 `StatusType` enumeration."
+      },
+      "ConnectorStandard": {
+        "type": "string",
+        "enum": [
+          "IEC_62196_T1",
+          "IEC_62196_T2",
+          "IEC_62196_T2_COMBO",
+          "CHADEMO",
+          "GB_T",
+          "CHAOJI",
+          "DOMESTIC_A",
+          "DOMESTIC_B",
+          "DOMESTIC_C",
+          "DOMESTIC_F",
+          "DOMESTIC_G",
+          "TESLA_R",
+          "TESLA_S",
+          "NEMA_5_20",
+          "NEMA_6_30",
+          "NEMA_6_50",
+          "NEMA_10_30",
+          "NEMA_10_50",
+          "NEMA_14_30",
+          "NEMA_14_50",
+          "PANTOGRAPH_BOTTOM_UP",
+          "PANTOGRAPH_TOP_DOWN",
+          "OTHER_1_PHASE_AC",
+          "OTHER_3_PHASE_AC",
+          "OTHER_DC"
+        ],
+        "description": "OCPI 2.2.1 `ConnectorType` standard.  CCS2 = IEC_62196_T2_COMBO, CHAdeMO, GB/T and ChaoJi supported."
+      },
+      "Connector": {
+        "type": "object",
+        "required": [
+          "id",
+          "standard",
+          "format",
+          "power_type",
+          "max_voltage",
+          "max_amperage",
+          "max_electric_power"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "standard": {
+            "$ref": "#/components/schemas/ConnectorStandard"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "SOCKET",
+              "CABLE"
+            ]
+          },
+          "power_type": {
+            "type": "string",
+            "enum": [
+              "AC_1_PHASE",
+              "AC_3_PHASE",
+              "DC"
+            ]
+          },
+          "max_voltage": {
+            "type": "integer",
+            "description": "Volts",
+            "example": 400
+          },
+          "max_amperage": {
+            "type": "integer",
+            "description": "Amperes",
+            "example": 125
+          },
+          "max_electric_power": {
+            "type": "integer",
+            "description": "Watts",
+            "example": 50000
+          }
+        }
+      },
+      "EVSE": {
+        "type": "object",
+        "required": [
+          "evse_uid"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
+          },
+          "evse_uid": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "CPO-assigned EVSE identifier (maps to OCPI `evse.uid`)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/EVSEStatus"
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Connector"
+            }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "CHARGING_PROFILE_CAPABLE",
+                "CREDIT_CARD_PAYABLE",
+                "DEBIT_CARD_PAYABLE",
+                "REMOTE_START_STOP_CAPABLE",
+                "RESERVABLE",
+                "RFID_READER",
+                "TOKEN_GROUP_CAPABLE",
+                "UNLOCK_CAPABLE"
+              ]
+            },
+            "description": "OCPI 2.2.1 `Capability` flags."
+          }
+        }
+      },
+      "StartSessionRequest": {
+        "type": "object",
+        "required": [
+          "port_id",
+          "driver_token",
+          "wallet_balance",
+          "wallet_currency",
+          "tariff_rate_per_kwh",
+          "charger_id",
+          "station_id"
+        ],
+        "properties": {
+          "port_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "EVSE port to charge on."
+          },
+          "driver_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Optional driver record UUID.  Omit for anonymous token sessions."
+          },
+          "driver_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "RFID / app token used for authorisation (maps to OCPI `Token.uid`)."
+          },
+          "wallet_balance": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 10000,
+            "description": "Pre-authorised wallet amount in `wallet_currency`."
+          },
+          "wallet_currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3,
+            "example": "GHS",
+            "description": "ISO 4217 currency code for the wallet balance."
+          },
+          "tariff_rate_per_kwh": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 100,
+            "description": "Energy rate in `wallet_currency` per kWh — applied for live cost deduction."
+          },
+          "charger_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "OCPP charger identity string as registered in the OCPP server."
+          },
+          "station_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "description": "OCPI 2.2.1 Session object enriched with ChargeBridge billing fields.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "port_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "station_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "charger_id": {
+            "type": "string"
+          },
+          "driver_token": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "COMPLETED",
+              "INVALID",
+              "PENDING"
+            ],
+            "description": "OCPI 2.2.1 `SessionStatus`."
+          },
+          "start_datetime": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end_datetime": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "kwh": {
+            "type": "number",
+            "description": "Total energy delivered in kWh."
+          },
+          "total_cost": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string",
+            "example": "GHS"
+          },
+          "stop_reason": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "driver",
+              "wallet_exhausted",
+              "charger",
+              "system",
+              "emergency"
+            ]
+          },
+          "last_updated": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StopSessionRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "driver",
+              "emergency"
+            ],
+            "default": "driver"
+          }
+        }
+      },
+      "TariffCreateRequest": {
+        "type": "object",
+        "required": [
+          "tariff_code",
+          "currency",
+          "energy_rate"
+        ],
+        "properties": {
+          "network_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "tariff_code": {
+            "type": "string",
+            "maxLength": 64,
+            "example": "TARIFF-GH-STD-01"
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3,
+            "example": "GHS"
+          },
+          "energy_rate": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-kWh charge."
+          },
+          "time_rate": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Per-minute idle charge."
+          },
+          "flat_fee": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Session start fee."
+          },
+          "idle_rate": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Idle parking rate per minute."
+          },
+          "min_power_kw": {
+            "type": "number",
+            "minimum": 0,
+            "nullable": true
+          },
+          "max_power_kw": {
+            "type": "number",
+            "minimum": 0,
+            "nullable": true
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "ocpi_push",
+              "emip_push",
+              "marketplace"
+            ],
+            "default": "manual"
+          },
+          "restrictions": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true,
+            "description": "OCPI 2.2.1 TariffRestrictions object (time-of-day, day-of-week, min/max kWh)."
+          }
+        }
+      },
+      "Tariff": {
+        "type": "object",
+        "description": "OCPI 2.2.1 Tariff object.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tariff_code": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "example": "GHS"
+          },
+          "energy_rate": {
+            "type": "number"
+          },
+          "time_rate": {
+            "type": "number"
+          },
+          "flat_fee": {
+            "type": "number"
+          },
+          "idle_rate": {
+            "type": "number"
+          },
+          "min_power_kw": {
+            "type": "number",
+            "nullable": true
+          },
+          "max_power_kw": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ]
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "source": {
+            "type": "string"
+          },
+          "last_updated": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CostCalculation": {
+        "type": "object",
+        "properties": {
+          "energy_kwh": {
+            "type": "number"
+          },
+          "duration_min": {
+            "type": "number"
+          },
+          "tariff_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "OCPICDRPush": {
+        "type": "object",
+        "description": "OCPI 2.2.1 CDR object pushed by a CPO to the ChargeBridge eMSP endpoint.",
+        "required": [
+          "id",
+          "start_date_time",
+          "stop_date_time",
+          "auth_id",
+          "currency",
+          "total_energy",
+          "last_updated"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "CPO-assigned CDR identifier."
+          },
+          "start_date_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stop_date_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 255,
+            "nullable": true
+          },
+          "auth_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Token UID used for session authorisation."
+          },
+          "currency": {
+            "type": "string",
+            "maxLength": 3,
+            "example": "GHS"
+          },
+          "total_energy": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Total kWh delivered."
+          },
+          "total_cost": {
+            "type": "number",
+            "minimum": 0,
+            "nullable": true
+          },
+          "last_updated": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "DriverCreateRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "country_code"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "Full name (encrypted at rest)."
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 255,
+            "description": "Driver email (encrypted at rest)."
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 30,
+            "nullable": true,
+            "description": "Mobile number (encrypted at rest)."
+          },
+          "country_code": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2,
+            "example": "GH",
+            "description": "ISO 3166-1 alpha-2.  Determines data residency region."
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 128,
+            "nullable": true
+          },
+          "consent_version": {
+            "type": "string",
+            "maxLength": 16,
+            "default": "1.0",
+            "description": "Privacy policy version the driver accepted."
+          }
+        }
+      },
+      "DriverResponse": {
+        "type": "object",
+        "description": "Driver metadata.  PII fields (name, email, phone) are never returned via the API — they are encrypted server-side.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pseudonym_token": {
+            "type": "string",
+            "description": "Stable pseudonymous reference for billing records.  Retained after GDPR erasure."
+          },
+          "city": {
+            "type": "string",
+            "nullable": true
+          },
+          "country_code": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "erased",
+              "suspended"
+            ]
+          },
+          "erased_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "GDPRErasureResponse": {
+        "type": "object",
+        "properties": {
+          "driver_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pseudonym_token": {
+            "type": "string"
+          },
+          "erased_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "tables_affected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "WebhookRegisterRequest": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "HTTPS endpoint that will receive signed event payloads."
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "session.started",
+                "session.ended",
+                "session.wallet_low",
+                "session.wallet_exhausted",
+                "port.status",
+                "charger.fault",
+                "charger.connected",
+                "charger.disconnected",
+                "ocpi.cdr_received",
+                "ocpi.session_update",
+                "ocpi.location_update",
+                "dispute.opened",
+                "dispute.updated"
+              ]
+            },
+            "default": [],
+            "description": "Event types to subscribe to.  Empty array = subscribe to all."
+          }
+        }
+      },
+      "WebhookRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "failed"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WebhookCreatedResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WebhookRecord"
+          }
+        ],
+        "properties": {
+          "signing_secret": {
+            "type": "string",
+            "description": "**Shown once only.** 32-byte hex signing secret.  Store securely — it cannot be retrieved again.  Used to verify `X-Gateway-Signature` HMAC-SHA256 headers on incoming webhook deliveries."
+          }
+        }
+      },
+      "NetworkRegisterRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "country_code",
+          "party_id",
+          "role",
+          "protocol"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "example": "ECG Ghana EV Network"
+          },
+          "country_code": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2,
+            "example": "GH",
+            "description": "ISO 3166-1 alpha-2.  Maps to OCPI `country_code`."
+          },
+          "party_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3,
+            "example": "ECG",
+            "description": "OCPI party identifier (up to 3 ASCII characters)."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "CPO",
+              "EMSP",
+              "HUB"
+            ],
+            "description": "OCPI 2.2 role."
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "OCPI",
+              "EMIP",
+              "OCPP+OCPI"
+            ]
+          },
+          "ocpi_endpoint": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true,
+            "description": "Base URL of the partner's OCPI 2.2.1 versions endpoint."
+          },
+          "emip_endpoint": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "evse_count": {
+            "type": "integer",
+            "minimum": 0,
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true
+          }
+        }
+      },
+      "RoamingAgreementRequest": {
+        "type": "object",
+        "required": [
+          "network_id",
+          "direction"
+        ],
+        "properties": {
+          "network_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "inbound",
+              "bilateral"
+            ],
+            "description": "`outbound` = our drivers roam on partner network.  `inbound` = partner drivers roam on ours."
+          },
+          "tariff_ref": {
+            "type": "string",
+            "nullable": true
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "terms": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true
+          }
+        }
+      },
+      "SignAgreementRequest": {
+        "type": "object",
+        "required": [
+          "signer_email"
+        ],
+        "properties": {
+          "signer_email": {
+            "type": "string",
+            "format": "email",
+            "description": "Email address of the authorised signatory."
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "401 Unauthorized — missing or invalid `Authorization` header.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiResponse"
+            },
+            "example": {
+              "data": null,
+              "meta": {},
+              "error": {
+                "code": "UNAUTHORIZED",
+                "message": "Invalid or expired token",
+                "details": null,
+                "requestId": "req_01HXY"
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "403 Forbidden — authenticated but lacks permission for this resource.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiResponse"
+            },
+            "example": {
+              "data": null,
+              "meta": {},
+              "error": {
+                "code": "FORBIDDEN",
+                "message": "Access denied",
+                "details": null,
+                "requestId": "req_01HXZ"
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "404 Not Found — resource does not exist or is not accessible to this tenant.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiResponse"
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "422 Unprocessable Entity — request body or query parameters failed schema validation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiResponse"
+            },
+            "example": {
+              "data": null,
+              "meta": {},
+              "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "port_id must be a valid UUID",
+                "details": {
+                  "field": "port_id"
+                },
+                "requestId": null
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "500 Internal Server Error — an unexpected error occurred.  A `requestId` is always returned for support escalation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiResponse"
+            }
+          }
+        }
+      }
+    }
+  }
+}
