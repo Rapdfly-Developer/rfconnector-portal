@@ -6314,6 +6314,50 @@ const ACCESS_PROVIDERS: AccessProvider[] = [
   // Additional providers can be added here following the same AccessProvider shape
 ];
 
+function buildAccessFallback(): AccessStation[] {
+  return MARKETPLACE_ACCESS_POINTS.map((ap, i): AccessStation => {
+    const connParts = ap.connectors.split('·').map(s => s.trim()).filter(Boolean);
+    const connectors = connParts.map((part, j) => {
+      const m = part.match(/^(\d+)\s+(.+)$/);
+      const count  = m ? parseInt(m[1]) : 1;
+      const type   = m ? m[2] : part;
+      const power  = parseInt(ap.maxPower) || 50;
+      return Array.from({ length: count }, (_, k) => ({
+        connectorRef:   `${ap.id}-C${j}-${k}`,
+        connectorType:  type,
+        powerKw:        power,
+        status:         ap.status === 'Available' ? 'Available' : ap.status === 'Charging' ? 'Occupied' : ap.status === 'Reserved' ? 'Reserved' : 'Offline',
+        waitingDrivers: 0,
+      }));
+    }).flat();
+
+    const avail = connectors.filter(c => c.status === 'Available').length;
+    const occ   = connectors.filter(c => c.status === 'Occupied').length;
+    const stStatus = avail > 0 ? 'Available' : occ > 0 ? 'Busy' : 'Offline';
+
+    return {
+      stationId:           ap.id,
+      stationName:         ap.name,
+      address:             `${ap.city}, ${ap.country}`,
+      latitude:            ap.lat,
+      longitude:           ap.lng,
+      distanceKm:          Math.round((i + 1) * 0.8 * 10) / 10,
+      chargingSpeed:       ap.maxPower,
+      operatingHours:      '24/7',
+      availableConnectors: avail,
+      occupiedConnectors:  occ,
+      totalConnectors:     connectors.length || ap.connectorCount,
+      waitingDrivers:      0,
+      estimatedWaitMin:    0,
+      stationStatus:       stStatus,
+      lastUpdated:         ap.lastUpdated,
+      pricing:             ap.tariff,
+      provider:            ap.network,
+      connectors,
+    };
+  });
+}
+
 const ACCESS_STATUS_STYLES: Record<string, string> = {
   Available: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
   Busy:      'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
@@ -6335,6 +6379,7 @@ function AccessWorkspace() {
   const PAGE_SIZE                  = 10;
 
   const [stations, setStations]   = useState<AccessStation[]>([]);
+  const [isDemo, setIsDemo]       = useState(false);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -6360,11 +6405,17 @@ function AccessWorkspace() {
     try {
       const result = await provider.fetch(parsedLat, parsedLng, radius);
       setStations(result.stations);
+      setIsDemo(false);
       setLastRefresh(new Date());
       setCountdown(refreshInterval);
       setPage(1);
-    } catch (e) {
-      setError(`Failed to load stations: ${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      // Backend unreachable — serve sample data so the UI stays useful
+      setStations(buildAccessFallback());
+      setIsDemo(true);
+      setLastRefresh(new Date());
+      setCountdown(refreshInterval);
+      setPage(1);
     } finally {
       setLoading(false);
     }
@@ -6446,9 +6497,9 @@ function AccessWorkspace() {
         action={
           <div className="flex items-center gap-2 flex-wrap">
             {lastRefresh && (
-              <span className="text-[10px] text-slate-400 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
-                Refreshes in {countdown}s
+              <span className={`text-[10px] flex items-center gap-1.5 px-2 py-1 rounded-full font-semibold ${isDemo ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full inline-block ${isDemo ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'}`} />
+                {isDemo ? 'Sample' : `Live · ${countdown}s`}
               </span>
             )}
             <select
@@ -6538,7 +6589,13 @@ function AccessWorkspace() {
             <Search className="w-4 h-4" /> Search
           </button>
         </div>
-        {error && (
+        {isDemo && (
+          <p className="mt-3 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            Backend unreachable — showing sample station data. Set <code className="font-mono bg-amber-100 dark:bg-amber-900/30 px-1 rounded">VITE_BACKEND_URL</code> or start the local API server to load live data.
+          </p>
+        )}
+        {error && !isDemo && (
           <p className="mt-3 text-xs text-red-500 flex items-center gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5" />{error}
           </p>
