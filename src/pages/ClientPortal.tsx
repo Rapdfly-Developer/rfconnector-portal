@@ -8,7 +8,7 @@
  *  Clearing  : Supervision · Tracking · Check & Bill · Disputes · Invoicing · Messaging
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { fetchDashboardKPIs, fetchMarketplaceNetworks, fetchDisputes, fetchInvoices, VOLTA_TENANT_ID, type DashboardKPIs, type DbNetwork, type DbDispute, type DbInvoice } from '../lib/supabase';
+import { fetchDashboardKPIs, fetchMarketplaceNetworks, fetchDisputes, fetchInvoices, fetchHubjectNetworks, VOLTA_TENANT_ID, type DashboardKPIs, type DbNetwork, type DbDispute, type DbInvoice, type HubjectNetworkSummary } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNavigate } from 'react-router-dom';
@@ -2624,9 +2624,49 @@ function MarketplaceWorkspace() {
     });
   }, []);
 
+  /* ── Hubject OICP: real operator EVSE counts ── */
+  const [hubjectMap, setHubjectMap] = useState<Map<string, HubjectNetworkSummary>>(new Map());
+  const [hubjectConfigured, setHubjectConfigured] = useState(false);
+  useEffect(() => {
+    fetchHubjectNetworks().then(res => {
+      setHubjectConfigured(res.configured);
+      if (!res.configured || !res.data.length) return;
+      const m = new Map<string, HubjectNetworkSummary>();
+      for (const s of res.data) {
+        m.set(s.operatorName, s);
+        m.set(s.operatorId, s);
+      }
+      setHubjectMap(m);
+    });
+    // refresh every 5 minutes while the tab is open
+    const t = setInterval(() => {
+      fetchHubjectNetworks().then(res => {
+        if (!res.configured || !res.data.length) return;
+        const m = new Map<string, HubjectNetworkSummary>();
+        for (const s of res.data) { m.set(s.operatorName, s); m.set(s.operatorId, s); }
+        setHubjectMap(m);
+      });
+    }, 300_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Fuzzy-lookup a network name in the Hubject map (exact → includes → first token)
+  const lookupHubject = (name: string): HubjectNetworkSummary | undefined => {
+    if (!hubjectMap.size) return undefined;
+    if (hubjectMap.has(name)) return hubjectMap.get(name);
+    const lower = name.toLowerCase();
+    for (const [k, v] of hubjectMap) {
+      if (lower.includes(k.toLowerCase()) || k.toLowerCase().includes(lower)) return v;
+    }
+    return undefined;
+  };
+
   // Map DbNetwork → MarketplaceNetwork so all downstream UI logic stays unchanged
   const networks: MarketplaceNetwork[] = dbNetworksLoading || dbNetworks.length === 0
-    ? MARKETPLACE_NETWORKS
+    ? MARKETPLACE_NETWORKS.map(n => {
+        const h = lookupHubject(n.name);
+        return h ? { ...n, evses: h.totalEVSEs, evseAvailable: h.available, evseCharging: h.occupied + h.charging, evseInoperative: h.outOfService + h.offline } : n;
+      })
     : dbNetworks.map(r => {
         const m = r.metadata;
         const uiStatus: MarketplaceNetwork['status'] =
@@ -2635,10 +2675,11 @@ function MarketplaceWorkspace() {
           : 'New Connection';
         const mapX: Record<string,number> = { 'ECG (Electricity Co. Ghana)':38,'VRA EV Charge':42,'Goil EV Network':35,'Shell Ghana EV':28,'Total Energies Ghana':40,'GreenMobility GH':39,'ZOTC Nigeria':52,"CIE Côte d'Ivoire":30,'Eletrobras EV Brasil':28,'Voltbras Networks':30,'Charge Now México':15,'EnVolt México':14,'Enel X Colombia':20,'Zeta Energy Chile':18,'YPF Luz EV Argentina':22,'Evolta Argentina':21 };
         const mapY: Record<string,number> = { 'ECG (Electricity Co. Ghana)':55,'VRA EV Charge':53,'Goil EV Network':48,'Shell Ghana EV':58,'Total Energies Ghana':56,'GreenMobility GH':55,'ZOTC Nigeria':52,"CIE Côte d'Ivoire":56,'Eletrobras EV Brasil':65,'Voltbras Networks':63,'Charge Now México':52,'EnVolt México':54,'Enel X Colombia':60,'Zeta Energy Chile':72,'YPF Luz EV Argentina':75,'Evolta Argentina':73 };
+        const h = lookupHubject(r.name);
         return {
           name: r.name,
           country: r.country_code,
-          evses: r.evse_count,
+          evses:          h ? h.totalEVSEs  : r.evse_count,
           protocol: r.ocpi_version ? `OCPI ${r.ocpi_version}` : r.protocol,
           role: r.role === 'EMSP' ? 'eMSP' : r.role,
           status: uiStatus,
@@ -2653,9 +2694,9 @@ function MarketplaceWorkspace() {
           availability: m.avail,
           partnerSince: m.partnerSince ?? undefined,
           connectionHealth: m.health as MarketplaceNetwork['connectionHealth'],
-          evseAvailable: m.evseAvail,
-          evseCharging: m.evseChrg,
-          evseInoperative: m.evseInop,
+          evseAvailable:   h ? h.available                      : m.evseAvail,
+          evseCharging:    h ? h.occupied + h.charging          : m.evseChrg,
+          evseInoperative: h ? h.outOfService + h.offline        : m.evseInop,
           description: m.description,
         };
       });
@@ -3072,6 +3113,9 @@ function MarketplaceWorkspace() {
                 <h4 className="text-[10px] font-bold uppercase text-slate-400 tracking-wide">Access Points</h4>
                 {liveForSelected.length > 0 && (
                   <span className="text-[8px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full">● Live</span>
+                )}
+                {hubjectConfigured && lookupHubject(selectedNetwork.name) && (
+                  <span className="text-[8px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-full">● Hubject</span>
                 )}
               </div>
               <span className="text-[10px] text-slate-400">{selectedNetworkAccessPoints.length} stations</span>

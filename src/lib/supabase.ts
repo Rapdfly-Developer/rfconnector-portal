@@ -78,3 +78,39 @@ export async function fetchInvoices(tenantId: string): Promise<DbInvoice[]> {
   if (error) { console.error('fetchInvoices:', error.message); return []; }
   return (data as DbInvoice[]) ?? [];
 }
+
+// ── Hubject marketplace ───────────────────────────────────────────────────────
+
+export interface HubjectNetworkSummary {
+  operatorId:   string;
+  operatorName: string;
+  totalEVSEs:   number;
+  available:    number;
+  occupied:     number;
+  charging:     number;
+  reserved:     number;
+  outOfService: number;
+  offline:      number;
+  unknown:      number;
+}
+
+export interface HubjectMarketplaceResponse {
+  ok:         boolean;
+  configured: boolean;
+  fetchedAt:  string;
+  data:       HubjectNetworkSummary[];
+}
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string | undefined;
+
+export async function fetchHubjectNetworks(): Promise<HubjectMarketplaceResponse> {
+  const base = BACKEND_URL ?? 'http://localhost:3000';
+  try {
+    const res = await fetch(`${base}/api/marketplace/networks`);
+    if (!res.ok) return { ok: false, configured: false, fetchedAt: new Date().toISOString(), data: [] };
+    return (await res.json()) as HubjectMarketplaceResponse;
+  } catch (e) {
+    console.warn('fetchHubjectNetworks:', e);
+    return { ok: false, configured: false, fetchedAt: new Date().toISOString(), data: [] };
+  }
+}
