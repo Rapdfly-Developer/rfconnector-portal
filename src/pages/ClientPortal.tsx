@@ -7094,6 +7094,179 @@ function LiveDataDetail({ loc, tariffMap, onBack }: { loc: OCPILocation; tariffM
   );
 }
 
+// ── Fastned UK Map (Leaflet) ───────────────────────────────────────────────────
+const EVSE_STATUS_CLR: Record<string, string> = {
+  AVAILABLE:   '#10b981',
+  CHARGING:    '#f59e0b',
+  RESERVED:    '#3b82f6',
+  INOPERATIVE: '#ef4444',
+  OUTOFORDER:  '#ef4444',
+  BLOCKED:     '#ef4444',
+};
+
+interface FastnedMapProps {
+  locations:   OCPILocation[];
+  tariffMap:   Map<string, OCPITariff>;
+  onSelect:    (loc: OCPILocation) => void;
+  highlighted: OCPILocation | null;
+  latLngJump:  { lat: number; lng: number } | null;
+}
+
+function FastnedMap({ locations, tariffMap, onSelect, highlighted, latLngJump }: FastnedMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef       = useRef<L.Map | null>(null);
+  const markersRef   = useRef<L.CircleMarker[]>([]);
+  const onSelectRef  = useRef(onSelect);
+  useEffect(() => { onSelectRef.current = onSelect; });
+
+  // Pan to lat/lng when user submits the search box
+  useEffect(() => {
+    if (!latLngJump || !mapRef.current) return;
+    mapRef.current.setView([latLngJump.lat, latLngJump.lng], 12, { animate: true });
+  }, [latLngJump]);
+
+  // Init map centred on UK
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+    const map = L.map(containerRef.current, { center: [54.5, -2.5], zoom: 6, zoomControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 18,
+    }).addTo(map);
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+
+  // Re-draw markers whenever locations or highlight changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    markersRef.current.forEach(m => m.remove());
+    markersRef.current = [];
+
+    locations.forEach(loc => {
+      const lat = parseFloat(loc.coordinates.latitude);
+      const lng = parseFloat(loc.coordinates.longitude);
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      const avail  = loc.evses?.filter(e => e.status === 'AVAILABLE').length ?? 0;
+      const total  = loc.evses?.length ?? 0;
+      const isHL   = highlighted?.id === loc.id;
+      const color  = avail > 0 ? EVSE_STATUS_CLR.AVAILABLE : EVSE_STATUS_CLR.INOPERATIVE;
+      const price  = (() => {
+        for (const evse of loc.evses ?? []) for (const c of evse.connectors ?? []) { const t = tariffMap.get(c.tariff_ids?.[0] ?? ''); if (t) return ocpiPrice(t); }
+        return 'N/A';
+      })();
+      const kw = Math.max(0, ...(loc.evses?.flatMap(e => e.connectors?.map(c => ocpiKW(c)) ?? []) ?? []));
+      const conns = [...new Set(loc.evses?.flatMap(e => e.connectors?.map(c => ocpiStd(c.standard)) ?? []) ?? [])].join(' · ');
+
+      const marker = L.circleMarker([lat, lng], {
+        radius:      isHL ? 13 : 9,
+        color:       isHL ? '#4f46e5' : '#fff',
+        weight:      isHL ? 3 : 2,
+        fillColor:   color,
+        fillOpacity: isHL ? 1 : 0.88,
+        opacity:     1,
+      });
+
+      marker.bindTooltip(`
+        <div style="font-family:system-ui;min-width:190px">
+          <div style="font-weight:700;font-size:12px;color:#0f172a;margin-bottom:2px">${loc.name}</div>
+          <div style="font-size:10px;color:#64748b;margin-bottom:6px">${loc.city} · ${loc.country}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;font-size:10px">
+            <div style="background:#f8fafc;border-radius:4px;padding:3px 6px">
+              <div style="color:#94a3b8;font-size:8px;font-weight:700;text-transform:uppercase">Available</div>
+              <div style="color:${color};font-weight:700">${avail}/${total}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:4px;padding:3px 6px">
+              <div style="color:#94a3b8;font-size:8px;font-weight:700;text-transform:uppercase">Max kW</div>
+              <div style="color:#6366f1;font-weight:700">${kw} kW</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:4px;padding:3px 6px">
+              <div style="color:#94a3b8;font-size:8px;font-weight:700;text-transform:uppercase">Price</div>
+              <div style="color:#059669;font-weight:700">${price}</div>
+            </div>
+          </div>
+          ${conns ? `<div style="margin-top:5px;font-size:9px;color:#475569">${conns}</div>` : ''}
+          <div style="margin-top:6px;font-size:10px;font-weight:600;color:#4f46e5;text-align:right">Click for details →</div>
+        </div>
+      `, { permanent: false, direction: 'top', offset: [0, -12], className: 'leaflet-tooltip-custom' });
+
+      marker.on('click', () => onSelectRef.current(loc));
+      marker.addTo(map);
+      markersRef.current.push(marker);
+    });
+
+    // Auto-fit bounds
+    if (locations.length > 0) {
+      const pts = locations
+        .map(l => [parseFloat(l.coordinates.latitude), parseFloat(l.coordinates.longitude)] as [number, number])
+        .filter(([lat, lng]) => !isNaN(lat) && !isNaN(lng));
+      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [40, 40] });
+    }
+  }, [locations, tariffMap, highlighted]);
+
+  return (
+    <div className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700" style={{ height: 520 }}>
+      <div ref={containerRef} className="w-full h-full" />
+      {/* Legend */}
+      <div className="absolute bottom-3 right-3 z-[1000] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 shadow-lg">
+        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">Status</p>
+        {[['#10b981','Available'],['#f59e0b','Charging'],['#ef4444','Inoperative']] .map(([clr, label]) => (
+          <div key={label} className="flex items-center gap-1.5 mb-1 last:mb-0">
+            <span className="w-3 h-3 rounded-full inline-block border-2 border-white shadow-sm" style={{ background: clr }} />
+            <span className="text-[10px] text-slate-600 dark:text-slate-300">{label}</span>
+          </div>
+        ))}
+      </div>
+      {/* Station count badge */}
+      <div className="absolute top-3 left-3 z-[1000] bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 shadow-lg flex items-center gap-2">
+        <MapPin className="w-3.5 h-3.5 text-indigo-500" />
+        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{locations.length} stations</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Lat/Lng search box ─────────────────────────────────────────────────────────
+function LatLngSearchBox({ onJump }: { onJump: (lat: number, lng: number) => void }) {
+  const [val, setVal] = useState('');
+  const [err, setErr] = useState('');
+
+  function handle() {
+    setErr('');
+    const parts = val.split(/[\s,]+/).filter(Boolean);
+    if (parts.length < 2) { setErr('Enter lat, lng — e.g. 51.5, -0.1'); return; }
+    const lat = parseFloat(parts[0]), lng = parseFloat(parts[1]);
+    if (isNaN(lat) || isNaN(lng)) { setErr('Invalid coordinates'); return; }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) { setErr('Out of range'); return; }
+    onJump(lat, lng);
+    setVal('');
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            value={val}
+            onChange={e => { setVal(e.target.value); setErr(''); }}
+            onKeyDown={e => e.key === 'Enter' && handle()}
+            placeholder="Jump to lat, lng  e.g. 51.5, -0.1"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
+        <button onClick={handle}
+          className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700">
+          Go
+        </button>
+      </div>
+      {err && <p className="text-xs text-red-500 pl-1">{err}</p>}
+    </div>
+  );
+}
+
 function LiveDataWorkspace() {
   const [locations, setLocations]   = useState<OCPILocation[]>([]);
   const [tariffMap, setTariffMap]   = useState<Map<string, OCPITariff>>(new Map());
@@ -7109,6 +7282,10 @@ function LiveDataWorkspace() {
   const [open24h, setOpen24h]       = useState(false);
   const [selectedLoc, setSelectedLoc] = useState<OCPILocation | null>(null);
   const [page, setPage]             = useState(1);
+  const [viewMode, setViewMode]     = useState<'cards' | 'map'>('cards');
+  const [mapHighlight, setMapHighlight] = useState<OCPILocation | null>(null);
+  const [latLngJump, setLatLngJump] = useState<{ lat: number; lng: number } | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
   const PG = 9;
 
   const fetchAll = useCallback(async () => {
@@ -7188,6 +7365,17 @@ function LiveDataWorkspace() {
                 {isDemo ? 'Sample' : `Live · ${countdown}s`}
               </span>
             )}
+            {/* View toggle */}
+            <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <button onClick={() => setViewMode('cards')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors ${viewMode === 'cards' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+                <LayoutDashboard className="w-3.5 h-3.5" /> Cards
+              </button>
+              <button onClick={() => setViewMode('map')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors border-l border-slate-200 dark:border-slate-700 ${viewMode === 'map' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+                <MapPin className="w-3.5 h-3.5" /> Map
+              </button>
+            </div>
             <select value={refreshInt} onChange={e => setRefreshInt(Number(e.target.value))}
               className="text-xs border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300">
               <option value={30}>Every 30s</option>
@@ -7224,7 +7412,7 @@ function LiveDataWorkspace() {
         ))}
       </div>
 
-      {/* Filters */}
+      {/* Shared filters (always visible) */}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -7254,7 +7442,7 @@ function LiveDataWorkspace() {
         </label>
       </div>
 
-      {/* Loading */}
+      {/* Loading skeleton */}
       {loading && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1,2,3,4,5,6].map(i => (
@@ -7277,8 +7465,48 @@ function LiveDataWorkspace() {
         </div>
       )}
 
-      {/* Station cards */}
-      {!loading && paginated.length > 0 && (
+      {/* ── MAP VIEW ──────────────────────────────────────────────────────────── */}
+      {!loading && filtered.length > 0 && viewMode === 'map' && (
+        <div className="space-y-3">
+          <LatLngSearchBox onJump={(lat, lng) => {
+            // pan the FastnedMap's internal Leaflet instance via a ref callback
+            setMapHighlight(null);
+            // We pass the jump via a tiny state so FastnedMap can react
+            setLatLngJump({ lat, lng });
+          }} />
+          <FastnedMap
+            locations={filtered}
+            tariffMap={tariffMap}
+            highlighted={mapHighlight}
+            onSelect={loc => { setMapHighlight(loc); setSelectedLoc(loc); }}
+            latLngJump={latLngJump}
+          />
+          {/* Station list below map */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+            {filtered.map(loc => {
+              const avail = locAvail(loc);
+              const total = locTotal(loc);
+              const hl    = mapHighlight?.id === loc.id;
+              return (
+                <button key={loc.id}
+                  onClick={() => { setMapHighlight(loc); setSelectedLoc(loc); }}
+                  className={`text-left rounded-xl border p-3 transition-all flex items-center gap-3 ${hl ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 shadow-md' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-indigo-300'}`}>
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${avail > 0 ? 'bg-emerald-500' : 'bg-red-400'}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{loc.name}</p>
+                    <p className="text-[10px] text-slate-400">{loc.city} · {avail}/{total} EVSEs available</p>
+                    <p className="text-[10px] text-slate-400 font-mono">{parseFloat(loc.coordinates.latitude).toFixed(4)}, {parseFloat(loc.coordinates.longitude).toFixed(4)}</p>
+                  </div>
+                  <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── CARD VIEW ─────────────────────────────────────────────────────────── */}
+      {!loading && paginated.length > 0 && viewMode === 'cards' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {paginated.map(loc => {
             const avail = locAvail(loc);
@@ -7290,7 +7518,6 @@ function LiveDataWorkspace() {
             return (
               <button key={loc.id} onClick={() => setSelectedLoc(loc)}
                 className="text-left bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 p-5 hover:border-indigo-400 dark:hover:border-indigo-600 hover:shadow-md dark:hover:shadow-indigo-900/20 transition-all group">
-                {/* Header */}
                 <div className="flex items-start justify-between mb-3">
                   <div className="min-w-0 flex-1 mr-2">
                     <p className="text-sm font-bold text-slate-800 dark:text-white truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{loc.name}</p>
@@ -7300,13 +7527,11 @@ function LiveDataWorkspace() {
                     {statusOk ? 'Available' : 'Busy'}
                   </span>
                 </div>
-                {/* Connector chips */}
                 <div className="flex flex-wrap gap-1 mb-3">
                   {conns.slice(0, 4).map(c => (
                     <span key={c} className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:border-indigo-800/30">{c}</span>
                   ))}
                 </div>
-                {/* Stats */}
                 <div className="grid grid-cols-3 gap-2 mb-3">
                   {[
                     { label: 'Max Power', val: kw > 0 ? `${kw} kW` : '—', cls: 'text-slate-800 dark:text-white' },
@@ -7319,7 +7544,6 @@ function LiveDataWorkspace() {
                     </div>
                   ))}
                 </div>
-                {/* Footer */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
                     {loc.opening_times?.twentyfourseven && (
