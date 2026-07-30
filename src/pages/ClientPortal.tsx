@@ -6929,8 +6929,8 @@ interface OCPITariff {
   last_updated: string;
 }
 
-const FASTNED_LOC_URL = 'https://uk-public.api.fastned.nl/uk-public/ocpi/cpo/2.2.1/locations';
-const FASTNED_TAR_URL = 'https://uk-public.api.fastned.nl/uk-public/ocpi/cpo/2.2.1/tariffs';
+const FASTNED_LOC_URL = '/api/fastned/locations';
+const FASTNED_TAR_URL = '/api/fastned/tariffs';
 
 const OCPI_STD_MAP: Record<string, string> = {
   IEC_62196_T2_COMBO: 'CCS2', IEC_62196_T1_COMBO: 'CCS1',
